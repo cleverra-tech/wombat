@@ -462,6 +462,30 @@ pub const ValueLog = struct {
         return total;
     }
 
+    /// Check if garbage collection should run based on threshold
+    pub fn shouldRunGC(self: *Self, threshold: f64) bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        for (self.files.items) |file| {
+            if (file.stats.getDiscardRatio() >= threshold) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Run garbage collection on files with high discard ratio
+    pub fn runGC(self: *Self, threshold: f64) !bool {
+        try self.reclaimSpace(threshold);
+        return true;
+    }
+
+    /// Get current size of all files
+    pub fn size(self: *Self) u64 {
+        return self.getTotalSize();
+    }
+
     /// Load existing value log files from directory
     fn loadExistingFiles(self: *Self) !void {
         var dir = fs.cwd().openDir(self.dir_path, .{ .iterate = true }) catch |err| switch (err) {

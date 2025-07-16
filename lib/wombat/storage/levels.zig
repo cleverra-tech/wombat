@@ -47,10 +47,10 @@ pub const LevelHandler = struct {
         }
     }
 
-    pub fn get(self: *Self, allocator: std.mem.Allocator, key: []const u8) !?ValueStruct {
+    pub fn get(self: *Self, key: []const u8) !?ValueStruct {
         for (self.tables.items) |table| {
             if (table.overlapsWithKeyRange(key, key)) {
-                if (try table.get(allocator, key)) |value| {
+                if (try table.get(key)) |value| {
                     return value;
                 }
             }
@@ -181,7 +181,7 @@ pub const LevelsController = struct {
 
     pub fn get(self: *Self, key: []const u8) !?ValueStruct {
         for (&self.levels) |*level| {
-            if (try level.get(self.allocator, key)) |value| {
+            if (try level.get(key)) |value| {
                 return value;
             }
         }
@@ -200,14 +200,14 @@ pub const LevelsController = struct {
         const table_path = try std.fmt.bufPrint(path_buffer[0..], "{s}/{d}.sst", .{ self.options.dir, file_id });
 
         var builder = try TableBuilder.init(self.allocator, table_path, self.options.*, 0);
-        defer builder.deinit(self.allocator);
+        defer builder.deinit();
 
         var iter = memtable.iterator();
         while (iter.next()) |entry| {
             try builder.add(entry.key, entry.value);
         }
 
-        try builder.finish(self.allocator);
+        try builder.finish();
 
         const table = try self.allocator.create(Table);
         table.* = try Table.open(self.allocator, table_path, file_id);
@@ -230,7 +230,7 @@ pub const LevelsController = struct {
         const output_path = try std.fmt.bufPrint(path_buffer[0..], "{s}/{d}.sst", .{ self.options.dir, file_id });
 
         var builder = try TableBuilder.init(self.allocator, output_path, self.options.*, output_level);
-        defer builder.deinit(self.allocator);
+        defer builder.deinit();
 
         var iterators = ArrayList(@import("table.zig").TableIterator).init(self.allocator);
         defer {
@@ -241,7 +241,7 @@ pub const LevelsController = struct {
         }
 
         for (job.input_tables.items) |table| {
-            const iter = table.iterator(self.allocator);
+            const iter = table.iterator();
             try iterators.append(iter);
         }
 
@@ -278,12 +278,12 @@ pub const LevelsController = struct {
             }
         }
 
-        try builder.finish(self.allocator);
+        try builder.finish();
 
         for (job.input_tables.items) |table| {
             self.levels[job.level].removeTable(table);
             if (job.level < MAX_LEVELS - 1) {
-                for (&self.levels[job.level + 1].tables.items) |next_table| {
+                for (self.levels[job.level + 1].tables.items) |next_table| {
                     if (next_table == table) {
                         self.levels[job.level + 1].removeTable(table);
                         break;
@@ -291,7 +291,7 @@ pub const LevelsController = struct {
                 }
             }
 
-            table.close(self.allocator);
+            table.close();
             self.allocator.destroy(table);
         }
 
@@ -317,5 +317,10 @@ pub const LevelsController = struct {
         }
 
         return false;
+    }
+
+    pub fn levelSize(self: *const Self, level: u32) u64 {
+        if (level >= MAX_LEVELS) return 0;
+        return self.levels[level].size();
     }
 };

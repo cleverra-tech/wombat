@@ -323,7 +323,7 @@ pub const DB = struct {
         }
 
         // Check SST levels
-        if (try self.levels.get(self.allocator, key)) |value| {
+        if (try self.levels.get(key)) |value| {
             if (value.isDeleted()) {
                 return null;
             }
@@ -717,11 +717,7 @@ pub const DB = struct {
                 const level_u32 = @as(u32, @intCast(level));
 
                 if (self.levels.needsCompaction()) {
-                    self.levels.compactLevel(level_u32) catch |err| {
-                        // Log error but continue
-                        _ = err;
-                        continue;
-                    };
+                    self.levels.compactLevel(level_u32) catch continue;
 
                     compacted = true;
                     self.updateStats(.compactions_total, 1);
@@ -732,8 +728,8 @@ pub const DB = struct {
             }
 
             // Sleep longer if no compaction was needed
-            const sleep_time = if (compacted) 10000000 else 100000000; // 10ms vs 100ms
-            std.time.sleep(sleep_time);
+            const sleep_time: u64 = if (compacted) 10000000 else 100000000; // 10ms vs 100ms
+            std.Thread.sleep(sleep_time);
         }
     }
 
@@ -744,16 +740,13 @@ pub const DB = struct {
             const gc_threshold = 0.7; // Run GC when 70% full
 
             if (self.value_log.shouldRunGC(gc_threshold)) {
-                self.value_log.runGC(0.5) catch |err| {
-                    // Log error but continue
-                    _ = err;
-                };
+                _ = self.value_log.runGC(0.5) catch false;
 
                 self.updateStats(.vlog_gc_runs, 1);
             }
 
             // Sleep for 30 seconds between GC checks
-            std.time.sleep(30000000000);
+            std.Thread.sleep(30000000000);
         }
     }
 };
