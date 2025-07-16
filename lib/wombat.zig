@@ -6,6 +6,8 @@ pub const SkipList = @import("wombat/core/skiplist.zig").SkipList;
 pub const ValueStruct = @import("wombat/core/skiplist.zig").ValueStruct;
 pub const BloomFilter = @import("wombat/core/bloom.zig").BloomFilter;
 pub const Channel = @import("wombat/core/channel.zig").Channel;
+pub const ChannelError = @import("wombat/core/channel.zig").ChannelError;
+pub const ChannelStats = @import("wombat/core/channel.zig").ChannelStats;
 pub const Options = @import("wombat/core/options.zig").Options;
 pub const CompressionType = @import("wombat/core/options.zig").CompressionType;
 
@@ -242,6 +244,50 @@ test "TxnManager lifecycle" {
     // Test discarding transaction
     txn_manager.discardTransaction(txn2);
     std.testing.expect(txn_manager.getActiveCount() == 0) catch unreachable;
+}
+
+test "Channel integration with database operations" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Test Channel with WriteRequest (from DB)
+    const WriteRequest = struct {
+        key: []const u8,
+        value: []const u8,
+        callback: *const fn (err: ?anyerror) void,
+    };
+
+    var write_channel = try Channel(WriteRequest).init(allocator, 10);
+    defer write_channel.deinit();
+
+    // Mock callback
+    const callback = struct {
+        fn cb(err: ?anyerror) void {
+            _ = err;
+        }
+    }.cb;
+
+    // Test sending write requests
+    const req1 = WriteRequest{
+        .key = "key1",
+        .value = "value1",
+        .callback = callback,
+    };
+
+    try write_channel.send(req1);
+    std.testing.expect(write_channel.size() == 1) catch unreachable;
+
+    // Test receiving write request
+    const received_req = try write_channel.receive();
+    std.testing.expect(std.mem.eql(u8, received_req.key, "key1")) catch unreachable;
+    std.testing.expect(std.mem.eql(u8, received_req.value, "value1")) catch unreachable;
+    std.testing.expect(write_channel.isEmpty()) catch unreachable;
+
+    // Test channel statistics
+    const stats = write_channel.getStats();
+    std.testing.expect(stats.sends_total == 1) catch unreachable;
+    std.testing.expect(stats.receives_total == 1) catch unreachable;
 }
 
 fn cleanupVLogTestDir(dir_path: []const u8) void {
