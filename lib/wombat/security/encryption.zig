@@ -45,7 +45,6 @@ pub const EncryptionKey = struct {
     salt: [16]u8,
 
     const Self = @This();
-
     /// Generate a new random encryption key
     pub fn generate(random: Random) Self {
         var key: [32]u8 = undefined;
@@ -53,7 +52,6 @@ pub const EncryptionKey = struct {
 
         random.bytes(&key);
         random.bytes(&salt);
-
         return Self{
             .key = key,
             .salt = salt,
@@ -67,7 +65,6 @@ pub const EncryptionKey = struct {
         crypto.pwhash.pbkdf2(&key, password, &salt, iterations, crypto.hash.sha2.Sha256) catch {
             return EncryptionError.KeyDerivationFailed;
         };
-
         return Self{
             .key = key,
             .salt = salt,
@@ -90,7 +87,6 @@ pub const Encryption = struct {
     const Self = @This();
     const AES = crypto.core.aes.Aes256;
     const GCM = crypto.aead.aes_gcm.Aes256Gcm;
-
     pub fn init(config: EncryptionConfig, random: Random) Self {
         return Self{
             .config = config,
@@ -130,7 +126,6 @@ pub const Encryption = struct {
         const key = try EncryptionKey.fromPassword(password, salt, self.config.key_derivation_iterations);
         self.setKey(key);
     }
-
     /// Generate random IV
     pub fn generateIV(self: *Self) [12]u8 {
         var iv: [12]u8 = undefined;
@@ -148,7 +143,6 @@ pub const Encryption = struct {
 
         // Generate random IV
         const iv = self.generateIV();
-
         // Allocate buffer for IV + ciphertext + tag
         const output_len = iv.len + plaintext.len + GCM.tag_length;
         const output = allocator.alloc(u8, output_len) catch return EncryptionError.OutOfMemory;
@@ -167,7 +161,6 @@ pub const Encryption = struct {
 
         return output;
     }
-
     /// Decrypt data using AES-256-GCM
     pub fn decrypt(self: *Self, ciphertext: []const u8, additional_data: []const u8, allocator: Allocator) EncryptionError![]u8 {
         if (!self.config.enabled) {
@@ -175,7 +168,6 @@ pub const Encryption = struct {
         }
 
         const key = self.key orelse return EncryptionError.InvalidKey;
-
         // Minimum size is IV + tag
         if (ciphertext.len < 12 + GCM.tag_length) {
             return EncryptionError.InvalidInput;
@@ -189,7 +181,6 @@ pub const Encryption = struct {
         // Allocate buffer for plaintext
         const plaintext = allocator.alloc(u8, encrypted_data.len) catch return EncryptionError.OutOfMemory;
         errdefer allocator.free(plaintext);
-
         // Decrypt and verify
         GCM.decrypt(plaintext, encrypted_data, tag.*, additional_data, iv.*, key.key) catch {
             return EncryptionError.DecryptionFailed;
@@ -211,7 +202,6 @@ pub const Encryption = struct {
         const plaintext_len = data.len - GCM.tag_length;
         const plaintext = data[0..plaintext_len];
         const tag = data[plaintext_len..];
-
         GCM.encrypt(plaintext, tag[0..GCM.tag_length], plaintext, additional_data, iv, key.key) catch {
             return EncryptionError.EncryptionFailed;
         };
@@ -230,7 +220,6 @@ pub const Encryption = struct {
         const ciphertext_len = data.len - GCM.tag_length;
         const ciphertext = data[0..ciphertext_len];
         const tag = data[ciphertext_len..];
-
         GCM.decrypt(ciphertext, ciphertext, tag[0..GCM.tag_length].*, additional_data, iv, key.key) catch {
             return EncryptionError.DecryptionFailed;
         };
@@ -289,7 +278,6 @@ pub const EncryptionUtils = struct {
     /// Check if data appears to be encrypted (basic heuristic)
     pub fn appearsEncrypted(data: []const u8) bool {
         if (data.len < 32) return false;
-
         // Check for high entropy (simple test)
         var byte_counts = [_]u32{0} ** 256;
         for (data[0..@min(data.len, 1024)]) |byte| {
@@ -313,7 +301,6 @@ pub const FileEncryption = struct {
     allocator: Allocator,
 
     const Self = @This();
-
     pub fn init(encryption: *Encryption, allocator: Allocator) Self {
         return Self{
             .encryption = encryption,
@@ -334,7 +321,6 @@ pub const FileEncryption = struct {
 
         std.fs.cwd().writeFile(file_path, encrypted_data) catch return EncryptionError.EncryptionFailed;
     }
-
     /// Decrypt file data
     pub fn decryptFile(self: *Self, file_path: []const u8) EncryptionError![]u8 {
         const file_data = std.fs.cwd().readFileAlloc(self.allocator, file_path, std.math.maxInt(usize)) catch {

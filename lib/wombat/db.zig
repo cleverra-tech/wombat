@@ -539,10 +539,7 @@ pub const DB = struct {
                 const ptr = ValuePointer.decode(value.value) catch {
                     return error.CorruptedData;
                 };
-                const data = self.value_log.read(ptr, self.allocator) catch {
-                    return null;
-                };
-                return data;
+                return self.value_log.read(ptr, self.allocator);
             }
 
             return try self.allocator.dupe(u8, value.value);
@@ -559,10 +556,7 @@ pub const DB = struct {
                     const ptr = ValuePointer.decode(value.value) catch {
                         return error.CorruptedData;
                     };
-                    const data = self.value_log.read(ptr, self.allocator) catch {
-                        return null;
-                    };
-                    return data;
+                    return self.value_log.read(ptr, self.allocator);
                 }
 
                 return try self.allocator.dupe(u8, value.value);
@@ -579,10 +573,7 @@ pub const DB = struct {
                 const ptr = ValuePointer.decode(value.value) catch {
                     return error.CorruptedData;
                 };
-                const data = self.value_log.read(ptr, self.allocator) catch {
-                    return null;
-                };
-                return data;
+                return self.value_log.read(ptr, self.allocator);
             }
 
             return try self.allocator.dupe(u8, value.value);
