@@ -32,6 +32,7 @@ pub fn build(b: *std.Build) void {
         "tests/crash_recovery_test.zig",
         "tests/simple_comprehensive_test.zig",
         "tests/comprehensive_test.zig",
+        "tests/options_test.zig",
     };
 
     const recovery_test_step = b.step("test-recovery", "Run recovery tests");

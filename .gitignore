@@ -1,4 +1,5 @@
 # Zig build artifacts
+.zig-cache/
 zig-cache/
 zig-out/
 *.a
@@ -37,4 +38,3 @@ Thumbs.db
 *.sst
 *.wal
 *.manifest.zig-cache/
-zig-out/
