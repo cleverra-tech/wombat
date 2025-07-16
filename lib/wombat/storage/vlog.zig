@@ -502,8 +502,8 @@ pub const ValueLog = struct {
         return total;
     }
 
-    /// Check if garbage collection should run based on threshold
-    pub fn shouldRunGC(self: *Self, threshold: f64) bool {
+    /// Check if space reclamation should run based on threshold
+    pub fn shouldRunSpaceReclamation(self: *Self, threshold: f64) bool {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -515,8 +515,8 @@ pub const ValueLog = struct {
         return false;
     }
 
-    /// Run garbage collection on files with high discard ratio
-    pub fn runGC(self: *Self, threshold: f64) !bool {
+    /// Run space reclamation on files with high discard ratio
+    pub fn runSpaceReclamation(self: *Self, threshold: f64) !bool {
         try self.reclaimSpace(threshold);
         return true;
     }

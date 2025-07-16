@@ -52,7 +52,7 @@ pub const DBStats = struct {
     txn_aborts: u64,
     compactions_total: u64,
     vlog_size: u64,
-    vlog_gc_runs: u64,
+    vlog_space_reclaim_runs: u64,
 };
 
 /// Enhanced worker performance statistics
@@ -64,7 +64,7 @@ pub const WorkerStats = struct {
     compaction_duration_ms: atomic.Value(u64),
     writer_batches_processed: atomic.Value(u64),
     writer_queue_depth: atomic.Value(u32),
-    vlog_gc_bytes_reclaimed: atomic.Value(u64),
+    vlog_space_reclaimed_bytes: atomic.Value(u64),
     active_compaction_workers: atomic.Value(u32),
 
     const Self = @This();
@@ -78,7 +78,7 @@ pub const WorkerStats = struct {
             .compaction_duration_ms = atomic.Value(u64).init(0),
             .writer_batches_processed = atomic.Value(u64).init(0),
             .writer_queue_depth = atomic.Value(u32).init(0),
-            .vlog_gc_bytes_reclaimed = atomic.Value(u64).init(0),
+            .vlog_space_reclaimed_bytes = atomic.Value(u64).init(0),
             .active_compaction_workers = atomic.Value(u32).init(0),
         };
     }
@@ -191,7 +191,7 @@ pub const DB = struct {
     // Background workers
     writer_thread: ?std.Thread,
     compaction_thread: ?std.Thread,
-    vlog_gc_thread: ?std.Thread,
+    vlog_space_reclaim_thread: ?std.Thread,
 
     // Enhanced worker management
     compaction_pool: ArrayList(std.Thread),
@@ -281,12 +281,12 @@ pub const DB = struct {
                 .txn_aborts = 0,
                 .compactions_total = 0,
                 .vlog_size = 0,
-                .vlog_gc_runs = 0,
+                .vlog_space_reclaim_runs = 0,
             },
             .stats_mutex = Mutex{},
             .writer_thread = null,
             .compaction_thread = null,
-            .vlog_gc_thread = null,
+            .vlog_space_reclaim_thread = null,
 
             // Enhanced worker management
             .compaction_pool = ArrayList(std.Thread).init(allocator),
@@ -311,7 +311,7 @@ pub const DB = struct {
         // Start background workers
         db.writer_thread = try std.Thread.spawn(.{}, writerWorker, .{db});
         db.compaction_thread = try std.Thread.spawn(.{}, enhancedCompactionCoordinator, .{db});
-        db.vlog_gc_thread = try std.Thread.spawn(.{}, vlogGCWorker, .{db});
+        db.vlog_space_reclaim_thread = try std.Thread.spawn(.{}, vlogSpaceReclaimWorker, .{db});
 
         // Start enhanced compaction worker pool
         try db.startCompactionPool();
@@ -598,7 +598,7 @@ pub const DB = struct {
         if (self.compaction_thread) |thread| {
             thread.join();
         }
-        if (self.vlog_gc_thread) |thread| {
+        if (self.vlog_space_reclaim_thread) |thread| {
             thread.join();
         }
 
@@ -896,10 +896,10 @@ pub const DB = struct {
         self.updateStats(.compactions_total, 1);
     }
 
-    /// Perform garbage collection on ValueLog
-    pub fn gcValueLog(self: *Self) !void {
-        _ = try self.value_log.runGC(0.5); // Run GC if 50% waste
-        self.updateStats(.vlog_gc_runs, 1);
+    /// Perform value log space reclamation (remove obsolete entries)
+    pub fn reclaimValueLogSpace(self: *Self) !void {
+        _ = try self.value_log.runSpaceReclamation(0.5); // Reclaim space if 50% waste
+        self.updateStats(.vlog_space_reclaim_runs, 1);
     }
 
     fn createMemTable(self: *Self) !*MemTable {
@@ -928,7 +928,7 @@ pub const DB = struct {
             .txn_commits => self.stats.txn_commits += delta,
             .txn_aborts => self.stats.txn_aborts += delta,
             .compactions_total => self.stats.compactions_total += delta,
-            .vlog_gc_runs => self.stats.vlog_gc_runs += delta,
+            .vlog_space_reclaim_runs => self.stats.vlog_space_reclaim_runs += delta,
             else => {}, // Other fields updated elsewhere
         }
     }
@@ -1159,28 +1159,28 @@ pub const DB = struct {
         }
     }
 
-    /// Value log garbage collection worker
-    fn vlogGCWorker(self: *Self) void {
+    /// Value log space reclamation worker
+    fn vlogSpaceReclaimWorker(self: *Self) void {
         while (!self.close_signal.load(.acquire)) {
-            // Run GC if value log is getting full
-            const gc_threshold = 0.7; // Run GC when 70% full
+            // Reclaim space if value log is getting full
+            const reclaim_threshold = 0.7; // Reclaim when 70% full
 
-            if (self.value_log.shouldRunGC(gc_threshold)) {
+            if (self.value_log.shouldRunSpaceReclamation(reclaim_threshold)) {
                 const start_time = std.time.milliTimestamp();
-                const bytes_reclaimed = self.value_log.runGC(0.5) catch 0;
+                const bytes_reclaimed = self.value_log.runSpaceReclamation(0.5) catch 0;
                 const end_time = std.time.milliTimestamp();
 
-                self.updateStats(.vlog_gc_runs, 1);
-                _ = self.worker_stats.vlog_gc_bytes_reclaimed.fetchAdd(bytes_reclaimed, .acq_rel);
+                self.updateStats(.vlog_space_reclaim_runs, 1);
+                _ = self.worker_stats.vlog_space_reclaimed_bytes.fetchAdd(bytes_reclaimed, .acq_rel);
 
-                // Log GC performance
+                // Log space reclamation performance
                 const duration = @as(u64, @intCast(end_time - start_time));
-                if (duration > 1000) { // Log if GC took more than 1 second
-                    std.log.info("VLog GC completed: {} bytes reclaimed in {} ms", .{ bytes_reclaimed, duration });
+                if (duration > 1000) { // Log if reclamation took more than 1 second
+                    std.log.info("VLog space reclamation completed: {} bytes reclaimed in {} ms", .{ bytes_reclaimed, duration });
                 }
             }
 
-            // Sleep for 30 seconds between GC checks
+            // Sleep for 30 seconds between space reclamation checks
             std.Thread.sleep(30000000000);
         }
     }
@@ -1281,8 +1281,8 @@ pub const DB = struct {
             switch (err) {
                 error.OutOfMemory => {
                     std.log.err("Compaction failed due to OOM: level {}", .{job.level});
-                    // Trigger GC to free memory
-                    _ = self.value_log.runGC(0.3) catch {};
+                    // Trigger space reclamation to free disk space
+                    _ = self.value_log.runSpaceReclamation(0.3) catch {};
                 },
                 error.IOError => {
                     std.log.err("Compaction failed due to IO error: level {}", .{job.level});

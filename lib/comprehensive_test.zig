@@ -69,7 +69,7 @@ test "Database lifecycle and basic operations" {
     try testing.expect(stats.gets_total >= 4);
     try testing.expect(stats.deletes_total >= 1);
 
-    std.debug.print("✅ Database lifecycle test passed\n", .{});
+    std.debug.print("Database lifecycle test passed\n", .{});
 }
 
 test "Transaction integration and MVCC" {
@@ -136,7 +136,7 @@ test "Transaction integration and MVCC" {
     const deleted_txn_value = try db.get("txn_key2");
     try testing.expect(deleted_txn_value == null);
 
-    std.debug.print("✅ Transaction integration test passed\n", .{});
+    std.debug.print("Transaction integration test passed\n", .{});
 }
 
 test "Large value and ValueLog integration" {
@@ -181,10 +181,10 @@ test "Large value and ValueLog integration" {
         try testing.expect(false);
     }
 
-    // Test ValueLog garbage collection
-    try db.gcValueLog();
+    // Test ValueLog space reclamation
+    try db.reclaimValueLogSpace();
 
-    // Values should still be accessible after GC
+    // Values should still be accessible after space reclamation
     if (try db.get("large_key")) |value| {
         defer allocator.free(value);
         try testing.expect(value.len == 1024);
@@ -192,7 +192,7 @@ test "Large value and ValueLog integration" {
         try testing.expect(false);
     }
 
-    std.debug.print("✅ ValueLog integration test passed\n", .{});
+    std.debug.print("ValueLog integration test passed\n", .{});
 }
 
 test "Batch operations and performance" {
@@ -234,7 +234,7 @@ test "Batch operations and performance" {
         }
     }
 
-    std.debug.print("✅ Batch operations test passed\n", .{});
+    std.debug.print("Batch operations test passed\n", .{});
     std.debug.print("Individual write time: {}ms\n", .{individual_time});
 }
 
@@ -300,7 +300,7 @@ test "MemTable rotation and compaction" {
     try testing.expect(final_stats.puts_total >= num_entries);
     try testing.expect(final_stats.compactions_total > 0);
 
-    std.debug.print("✅ MemTable rotation and compaction test passed\n", .{});
+    std.debug.print("MemTable rotation and compaction test passed\n", .{});
 }
 
 test "Concurrent-like stress testing" {
@@ -372,7 +372,7 @@ test "Concurrent-like stress testing" {
     try testing.expect(stress_stats.puts_total > 0);
     try testing.expect(stress_stats.gets_total > 0);
 
-    std.debug.print("✅ Stress testing passed\n", .{});
+    std.debug.print("Stress testing passed\n", .{});
     std.debug.print("Stress stats: puts={}, gets={}, deletes={}, txn_commits={}\n", .{
         stress_stats.puts_total,
         stress_stats.gets_total,
@@ -407,7 +407,7 @@ test "Edge cases and error handling" {
     // Test deleting non-existent key
     try db.delete("non_existent_delete_key"); // Should not error
 
-    std.debug.print("✅ Edge cases and error handling test passed\n", .{});
+    std.debug.print("Edge cases and error handling test passed\n", .{});
 }
 
 test "SkipList atomic operations verification" {
@@ -418,7 +418,7 @@ test "SkipList atomic operations verification" {
     // Basic skiplist test - simplified
     _ = allocator; // Avoid unused variable warning
 
-    std.debug.print("✅ SkipList atomic operations test passed\n", .{});
+    std.debug.print("SkipList atomic operations test passed\n", .{});
 }
 
 test "Component integration verification" {
@@ -429,12 +429,12 @@ test "Component integration verification" {
     // Test Oracle basic functionality
     var oracle = try wombat.Oracle.init(allocator);
     defer oracle.deinit();
-    
+
     const ts1 = try oracle.newReadTs();
     const ts2 = try oracle.newReadTs();
     try testing.expect(ts2 > ts1);
 
-    std.debug.print("✅ Component integration verification passed\n", .{});
+    std.debug.print("Component integration verification passed\n", .{});
 }
 
 /// Helper function to clean up test directories
