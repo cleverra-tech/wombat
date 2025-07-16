@@ -23,6 +23,9 @@ const ManifestFile = @import("storage/manifest.zig").ManifestFile;
 const TableInfo = @import("storage/manifest.zig").TableInfo;
 const WaterMark = @import("transaction/watermark.zig").WaterMark;
 const Entry = @import("storage/wal.zig").Entry;
+const CompactionJob = @import("storage/compaction.zig").CompactionJob;
+const CompactionPicker = @import("storage/compaction.zig").CompactionPicker;
+const CompactionStrategy = @import("storage/compaction.zig").CompactionStrategy;
 
 /// Database errors
 pub const DBError = error{
@@ -50,6 +53,94 @@ pub const DBStats = struct {
     compactions_total: u64,
     vlog_size: u64,
     vlog_gc_runs: u64,
+};
+
+/// Enhanced worker performance statistics
+pub const WorkerStats = struct {
+    compaction_jobs_queued: atomic.Value(u64),
+    compaction_jobs_completed: atomic.Value(u64),
+    compaction_jobs_failed: atomic.Value(u64),
+    compaction_bytes_processed: atomic.Value(u64),
+    compaction_duration_ms: atomic.Value(u64),
+    writer_batches_processed: atomic.Value(u64),
+    writer_queue_depth: atomic.Value(u32),
+    vlog_gc_bytes_reclaimed: atomic.Value(u64),
+    active_compaction_workers: atomic.Value(u32),
+
+    const Self = @This();
+
+    pub fn init() Self {
+        return Self{
+            .compaction_jobs_queued = atomic.Value(u64).init(0),
+            .compaction_jobs_completed = atomic.Value(u64).init(0),
+            .compaction_jobs_failed = atomic.Value(u64).init(0),
+            .compaction_bytes_processed = atomic.Value(u64).init(0),
+            .compaction_duration_ms = atomic.Value(u64).init(0),
+            .writer_batches_processed = atomic.Value(u64).init(0),
+            .writer_queue_depth = atomic.Value(u32).init(0),
+            .vlog_gc_bytes_reclaimed = atomic.Value(u64).init(0),
+            .active_compaction_workers = atomic.Value(u32).init(0),
+        };
+    }
+
+    pub fn recordCompactionJob(self: *Self, bytes_processed: u64, duration_ms: u64) void {
+        _ = self.compaction_jobs_completed.fetchAdd(1, .acq_rel);
+        _ = self.compaction_bytes_processed.fetchAdd(bytes_processed, .acq_rel);
+        _ = self.compaction_duration_ms.fetchAdd(duration_ms, .acq_rel);
+    }
+
+    pub fn recordFailedCompaction(self: *Self) void {
+        _ = self.compaction_jobs_failed.fetchAdd(1, .acq_rel);
+    }
+
+    pub fn setWorkerQueueDepth(self: *Self, depth: u32) void {
+        self.writer_queue_depth.store(depth, .release);
+    }
+
+    pub fn incrementActiveWorkers(self: *Self) void {
+        _ = self.active_compaction_workers.fetchAdd(1, .acq_rel);
+    }
+
+    pub fn decrementActiveWorkers(self: *Self) void {
+        _ = self.active_compaction_workers.fetchSub(1, .acq_rel);
+    }
+};
+
+/// Compaction throttling configuration
+pub const CompactionThrottleConfig = struct {
+    max_compaction_workers: u32,
+    target_cpu_percent: u32,
+    io_throttle_bytes_per_sec: u64,
+    adaptive_throttling: bool,
+    priority_boost_threshold: f64,
+    max_pending_jobs: u32,
+
+    const Self = @This();
+
+    pub fn init() Self {
+        return Self{
+            .max_compaction_workers = 4,
+            .target_cpu_percent = 80,
+            .io_throttle_bytes_per_sec = 100 * 1024 * 1024, // 100MB/s
+            .adaptive_throttling = true,
+            .priority_boost_threshold = 0.8,
+            .max_pending_jobs = 32,
+        };
+    }
+
+    pub fn shouldThrottle(self: *const Self, current_workers: u32, pending_jobs: u32) bool {
+        return current_workers >= self.max_compaction_workers or pending_jobs >= self.max_pending_jobs;
+    }
+
+    pub fn calculateDelay(self: *const Self, job_priority: f64) u64 {
+        if (!self.adaptive_throttling) {
+            return 0;
+        }
+
+        const base_delay_ms = 10;
+        const priority_factor = if (job_priority > self.priority_boost_threshold) 0.5 else 1.0;
+        return @intFromFloat(@as(f64, @floatFromInt(base_delay_ms)) * priority_factor);
+    }
 };
 
 /// Write request for async operations
@@ -101,6 +192,13 @@ pub const DB = struct {
     writer_thread: ?std.Thread,
     compaction_thread: ?std.Thread,
     vlog_gc_thread: ?std.Thread,
+
+    // Enhanced worker management
+    compaction_pool: ArrayList(std.Thread),
+    compaction_jobs: Channel(CompactionJob),
+    compaction_picker: CompactionPicker,
+    worker_stats: WorkerStats,
+    compaction_throttle: CompactionThrottleConfig,
 
     // Synchronization
     memtable_mutex: Mutex,
@@ -189,6 +287,13 @@ pub const DB = struct {
             .writer_thread = null,
             .compaction_thread = null,
             .vlog_gc_thread = null,
+
+            // Enhanced worker management
+            .compaction_pool = ArrayList(std.Thread).init(allocator),
+            .compaction_jobs = Channel(CompactionJob).init(allocator, 64),
+            .compaction_picker = CompactionPicker.init(allocator, .level),
+            .worker_stats = WorkerStats.init(),
+            .compaction_throttle = CompactionThrottleConfig.init(),
             .memtable_mutex = Mutex{},
             .flush_signal = std.Thread.Condition{},
         };
@@ -205,8 +310,11 @@ pub const DB = struct {
 
         // Start background workers
         db.writer_thread = try std.Thread.spawn(.{}, writerWorker, .{db});
-        db.compaction_thread = try std.Thread.spawn(.{}, compactionWorker, .{db});
+        db.compaction_thread = try std.Thread.spawn(.{}, enhancedCompactionCoordinator, .{db});
         db.vlog_gc_thread = try std.Thread.spawn(.{}, vlogGCWorker, .{db});
+
+        // Start enhanced compaction worker pool
+        try db.startCompactionPool();
 
         return db;
     }
@@ -219,6 +327,18 @@ pub const DB = struct {
         if (options.value_log_file_size == 0) return DBError.InvalidOptions;
         if (options.bloom_false_positive <= 0.0 or options.bloom_false_positive >= 1.0) {
             return DBError.InvalidOptions;
+        }
+    }
+
+    /// Start the enhanced compaction worker pool
+    fn startCompactionPool(self: *Self) !void {
+        const num_workers = self.options.num_compactors;
+        try self.compaction_pool.ensureTotalCapacity(num_workers);
+
+        for (0..num_workers) |i| {
+            const worker_id = @as(u32, @intCast(i));
+            const thread = try std.Thread.spawn(.{}, enhancedCompactionWorker, .{ self, worker_id });
+            self.compaction_pool.appendAssumeCapacity(thread);
         }
     }
 
@@ -469,6 +589,7 @@ pub const DB = struct {
         // Close channels to wake up workers
         self.write_channel.close();
         self.batch_channel.close();
+        self.compaction_jobs.close();
 
         // Wait for all background workers to finish
         if (self.writer_thread) |thread| {
@@ -480,6 +601,12 @@ pub const DB = struct {
         if (self.vlog_gc_thread) |thread| {
             thread.join();
         }
+
+        // Wait for all compaction pool workers to finish
+        for (self.compaction_pool.items) |thread| {
+            thread.join();
+        }
+        self.compaction_pool.deinit();
 
         // Ensure all pending writes are flushed
         try self.sync();
@@ -510,6 +637,10 @@ pub const DB = struct {
         // Cleanup channels
         self.write_channel.deinit();
         self.batch_channel.deinit();
+        self.compaction_jobs.deinit();
+
+        // Cleanup enhanced worker management
+        self.compaction_picker.deinit();
 
         self.allocator.destroy(self);
     }
@@ -1035,13 +1166,169 @@ pub const DB = struct {
             const gc_threshold = 0.7; // Run GC when 70% full
 
             if (self.value_log.shouldRunGC(gc_threshold)) {
-                _ = self.value_log.runGC(0.5) catch false;
+                const start_time = std.time.milliTimestamp();
+                const bytes_reclaimed = self.value_log.runGC(0.5) catch 0;
+                const end_time = std.time.milliTimestamp();
 
                 self.updateStats(.vlog_gc_runs, 1);
+                _ = self.worker_stats.vlog_gc_bytes_reclaimed.fetchAdd(bytes_reclaimed, .acq_rel);
+
+                // Log GC performance
+                const duration = @as(u64, @intCast(end_time - start_time));
+                if (duration > 1000) { // Log if GC took more than 1 second
+                    std.log.info("VLog GC completed: {} bytes reclaimed in {} ms", .{ bytes_reclaimed, duration });
+                }
             }
 
             // Sleep for 30 seconds between GC checks
             std.Thread.sleep(30000000000);
+        }
+    }
+
+    /// Enhanced compaction coordinator that manages job selection and distribution
+    fn enhancedCompactionCoordinator(self: *Self) void {
+        while (!self.close_signal.load(.acquire)) {
+            // Pick compaction jobs using the advanced compaction picker
+            if (self.compaction_picker.pickCompaction(&self.levels)) |job| {
+                // Queue the job for worker threads to process
+                _ = self.worker_stats.compaction_jobs_queued.fetchAdd(1, .acq_rel);
+
+                // Try to send the job to the worker pool
+                if (self.compaction_jobs.trySend(job)) {
+                    // Job successfully queued
+                    continue;
+                } else {
+                    // Job queue is full, execute directly or wait
+                    const active_workers = self.worker_stats.active_compaction_workers.load(.acquire);
+                    const pending_jobs = self.compaction_jobs.size();
+
+                    if (self.compaction_throttle.shouldThrottle(active_workers, pending_jobs)) {
+                        // Apply throttling - delay before trying again
+                        const delay_ms = self.compaction_throttle.calculateDelay(job.priority);
+                        std.Thread.sleep(delay_ms * 1000000); // Convert to nanoseconds
+
+                        // Try to send again after delay
+                        if (self.compaction_jobs.trySend(job)) {
+                            continue;
+                        } else {
+                            // Still can't send, record failure and cleanup
+                            self.worker_stats.recordFailedCompaction();
+                            job.deinit(self.allocator);
+                        }
+                    } else {
+                        // Execute job directly in coordinator thread as fallback
+                        self.executeCompactionJob(job);
+                    }
+                }
+            } else {
+                // No compaction needed, sleep for a while
+                std.Thread.sleep(100000000); // 100ms
+            }
+        }
+    }
+
+    /// Enhanced compaction worker that processes jobs from the queue
+    fn enhancedCompactionWorker(self: *Self, worker_id: u32) void {
+        while (!self.close_signal.load(.acquire)) {
+            // Try to receive a compaction job with timeout
+            if (self.compaction_jobs.receiveTimeout(1000000)) |job| { // 1ms timeout
+                self.worker_stats.incrementActiveWorkers();
+                defer self.worker_stats.decrementActiveWorkers();
+
+                // Record start time for performance metrics
+                const start_time = std.time.milliTimestamp();
+
+                // Execute the compaction job
+                self.executeCompactionJob(job);
+
+                // Record completion metrics
+                const end_time = std.time.milliTimestamp();
+                const duration = @as(u64, @intCast(end_time - start_time));
+
+                // Estimate bytes processed (simplified calculation)
+                const bytes_processed = job.estimated_size;
+                self.worker_stats.recordCompactionJob(bytes_processed, duration);
+
+                // Log performance for monitoring
+                if (duration > 5000) { // Log slow compactions (>5s)
+                    std.log.warn("Slow compaction on worker {}: level {} took {} ms", .{ worker_id, job.level, duration });
+                }
+            } else |err| switch (err) {
+                ChannelError.ReceiveTimeout => {
+                    // Normal timeout, continue polling
+                    continue;
+                },
+                ChannelError.ChannelClosed => {
+                    // Channel closed, worker should exit
+                    break;
+                },
+                else => {
+                    // Other error, continue with next iteration
+                    continue;
+                },
+            }
+        }
+    }
+
+    /// Execute a compaction job with enhanced error handling and metrics
+    fn executeCompactionJob(self: *Self, job: CompactionJob) void {
+        defer job.deinit(self.allocator);
+
+        // Execute the actual compaction through the levels controller
+        self.levels.compactLevel(job.level) catch |err| {
+            self.worker_stats.recordFailedCompaction();
+
+            switch (err) {
+                error.OutOfMemory => {
+                    std.log.err("Compaction failed due to OOM: level {}", .{job.level});
+                    // Trigger GC to free memory
+                    _ = self.value_log.runGC(0.3) catch {};
+                },
+                error.IOError => {
+                    std.log.err("Compaction failed due to IO error: level {}", .{job.level});
+                },
+                else => {
+                    std.log.err("Compaction failed with error: {} level {}", .{ err, job.level });
+                },
+            }
+            return;
+        };
+
+        // Update global statistics
+        self.updateStats(.compactions_total, 1);
+
+        // Log successful compaction
+        std.log.info("Compaction completed: level {} -> {} ({} bytes)", .{ job.level, job.target_level, job.estimated_size });
+    }
+
+    /// Enhanced writer worker with better batch processing and queue management
+    fn enhancedWriterWorker(self: *Self) void {
+        while (!self.close_signal.load(.acquire)) {
+            var batch_processed = false;
+
+            // Process batches with priority over individual writes
+            if (self.batch_channel.tryReceive()) |maybe_batch| {
+                if (maybe_batch) |batch| {
+                    self.handleBatch(batch);
+                    _ = self.worker_stats.writer_batches_processed.fetchAdd(1, .acq_rel);
+                    batch_processed = true;
+                }
+            } else |_| {}
+
+            // Process individual writes if no batch was available
+            if (!batch_processed) {
+                if (self.write_channel.receiveTimeout(1000000)) |req| { // 1ms timeout
+                    self.handleWrite(req);
+                } else |err| switch (err) {
+                    ChannelError.ReceiveTimeout => {
+                        // Update queue depth statistics
+                        self.worker_stats.setWorkerQueueDepth(self.write_channel.size());
+                        continue;
+                    },
+                    ChannelError.ChannelClosed => break,
+                    else => continue,
+                }
+            }
         }
     }
 };

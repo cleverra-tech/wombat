@@ -394,6 +394,7 @@ pub const CompactionPicker = struct {
 
     /// Estimate compaction time
     pub fn estimateCompactionTime(self: *const Self, job: *const CompactionJob) u64 {
+        _ = self; // Mark as intentionally unused
         // Rough estimate: 10 MB/s compaction speed
         const bytes_per_second = 10 * 1024 * 1024;
         const estimated_seconds = job.estimated_size / bytes_per_second;
