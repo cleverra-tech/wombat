@@ -33,6 +33,13 @@ pub const ValuePointer = struct {
         std.mem.writeInt(u32, buf[offset..][0..4], self.size, .little);
     }
 
+    /// Encode ValuePointer to a newly allocated buffer
+    pub fn encodeAlloc(self: *const ValuePointer, allocator: Allocator) ![]u8 {
+        const buf = try allocator.alloc(u8, ENCODED_SIZE);
+        try self.encode(buf);
+        return buf;
+    }
+
     pub fn decode(buf: []const u8) !ValuePointer {
         if (buf.len < ENCODED_SIZE) {
             return error.BufferTooSmall;
@@ -255,9 +262,7 @@ pub const VLogFile = struct {
                 break :blk try allocator.dupe(u8, compressed_buf);
             };
             break :blk decompressed;
-        } else {
-            try allocator.dupe(u8, compressed_buf);
-        };
+        } else try allocator.dupe(u8, compressed_buf);
 
         // Return decompressed data
         return decompressed_value;

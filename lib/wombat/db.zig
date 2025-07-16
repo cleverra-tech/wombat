@@ -3,10 +3,12 @@ const ArrayList = std.ArrayList;
 const HashMap = std.HashMap;
 const atomic = std.atomic;
 const Mutex = std.Thread.Mutex;
+const fs = std.fs;
 const Channel = @import("core/channel.zig").Channel;
 const ChannelError = @import("core/channel.zig").ChannelError;
 const MemTable = @import("storage/memtable.zig").MemTable;
 const LevelsController = @import("storage/levels.zig").LevelsController;
+const Table = @import("storage/table.zig").Table;
 const Oracle = @import("transaction/oracle.zig").Oracle;
 const Transaction = @import("transaction/oracle.zig").Transaction;
 const ValueStruct = @import("core/skiplist.zig").ValueStruct;
@@ -16,6 +18,7 @@ const TxnOptions = @import("transaction/txn.zig").TxnOptions;
 const TxnError = @import("transaction/txn.zig").TxnError;
 const TxnManager = @import("transaction/txn.zig").TxnManager;
 const ValueLog = @import("storage/vlog.zig").ValueLog;
+const ValuePointer = @import("storage/vlog.zig").ValuePointer;
 const ManifestFile = @import("storage/manifest.zig").ManifestFile;
 const TableInfo = @import("storage/manifest.zig").TableInfo;
 const WaterMark = @import("transaction/watermark.zig").WaterMark;
@@ -220,9 +223,242 @@ pub const DB = struct {
     }
 
     fn recover(self: *Self) !void {
-        // TODO: Implement manifest-based recovery
-        // For now, we'll just validate the directory structure
-        _ = self;
+        // Validate directory structure exists
+        fs.cwd().access(self.options.dir, .{}) catch {
+            return DBError.IOError;
+        };
+
+        if (!std.mem.eql(u8, self.options.dir, self.options.value_dir)) {
+            fs.cwd().access(self.options.value_dir, .{}) catch {
+                return DBError.IOError;
+            };
+        }
+
+        // Recover from manifest first - this loads all table metadata
+        try self.recoverFromManifest();
+
+        // Recover from WAL files - replay uncommitted operations
+        try self.recoverFromWAL();
+
+        // Verify data integrity and clean up orphaned files
+        try self.verifyAndCleanup();
+    }
+
+    /// Recover database state from manifest file
+    fn recoverFromManifest(self: *Self) !void {
+        // The manifest file initialization already handles recovery
+        // We just need to load existing tables into the levels controller
+        for (0..self.options.max_levels) |level| {
+            const level_u32 = @as(u32, @intCast(level));
+            const tables = self.manifest.getTablesAtLevel(level_u32) catch continue;
+
+            for (tables) |table_info| {
+                // Verify table file exists
+                var table_path_buf: [512]u8 = undefined;
+                const full_path = std.fmt.bufPrint(&table_path_buf, "{s}/{s}", .{ self.options.dir, table_info.path }) catch continue;
+
+                fs.cwd().access(full_path, .{}) catch |err| switch (err) {
+                    error.FileNotFound => {
+                        // Table file missing - remove from manifest
+                        self.manifest.removeTable(table_info.id) catch {};
+                        continue;
+                    },
+                    else => continue,
+                };
+
+                // Load table into levels controller
+                const table = try self.allocator.create(Table);
+                table.* = Table.open(self.allocator, full_path, table_info.id) catch {
+                    self.allocator.destroy(table);
+                    continue;
+                };
+
+                // Add table to the appropriate level
+                if (level_u32 == 0) {
+                    self.levels.addLevel0Table(table) catch {
+                        table.close();
+                        self.allocator.destroy(table);
+                        continue;
+                    };
+                } else {
+                    self.levels.levels[level_u32].addTable(table) catch {
+                        table.close();
+                        self.allocator.destroy(table);
+                        continue;
+                    };
+                }
+            }
+        }
+    }
+
+    /// Recover uncommitted operations from WAL files
+    fn recoverFromWAL(self: *Self) !void {
+        // Scan directory for WAL files
+        var dir = fs.cwd().openDir(self.options.dir, .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var iterator = dir.iterate();
+        while (iterator.next() catch null) |entry| {
+            if (entry.kind != .file) continue;
+
+            // Check if it's a WAL file (pattern: wal_*.log)
+            if (!std.mem.startsWith(u8, entry.name, "wal_") or !std.mem.endsWith(u8, entry.name, ".log")) {
+                continue;
+            }
+
+            // During recovery, we want to replay ALL WAL files from previous runs
+            // We'll skip WAL files that are still being used by active memtables
+            // For now, replay all WAL files since we're in recovery mode
+
+            // Replay WAL file
+            var wal_path_buf: [512]u8 = undefined;
+            const wal_path = std.fmt.bufPrint(&wal_path_buf, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+
+            std.log.info("Replaying WAL file: {s}", .{entry.name});
+            self.replayWAL(wal_path) catch |err| {
+                std.log.warn("Failed to replay WAL file {s}: {}", .{ entry.name, err });
+                continue;
+            };
+            std.log.info("Successfully replayed WAL file: {s}", .{entry.name});
+
+            // After successful replay, delete the WAL file
+            fs.cwd().deleteFile(wal_path) catch {};
+        }
+    }
+
+    /// Replay a single WAL file
+    fn replayWAL(self: *Self, wal_path: []const u8) !void {
+        const wal_file = fs.cwd().openFile(wal_path, .{}) catch return;
+        defer wal_file.close();
+
+        const file_size = wal_file.getEndPos() catch return;
+        if (file_size == 0) return;
+
+        const content = self.allocator.alloc(u8, file_size) catch return;
+        defer self.allocator.free(content);
+
+        _ = wal_file.readAll(content) catch return;
+
+        // Parse WAL entries - format: key_len|value_len|timestamp|meta|key|value
+        var offset: usize = 0;
+        while (offset < content.len) {
+            if (offset + 17 > content.len) break; // 4 + 4 + 8 + 1 = 17 bytes header
+
+            // Read key length
+            const key_len = std.mem.readInt(u32, content[offset .. offset + 4][0..4], .little);
+            offset += 4;
+
+            // Read value length
+            const value_len = std.mem.readInt(u32, content[offset .. offset + 4][0..4], .little);
+            offset += 4;
+
+            // Read timestamp
+            const timestamp = std.mem.readInt(u64, content[offset .. offset + 8][0..8], .little);
+            offset += 8;
+
+            // Read meta
+            const meta = content[offset];
+            offset += 1;
+
+            // Read key
+            if (offset + key_len > content.len) break;
+            const key = content[offset .. offset + key_len];
+            offset += key_len;
+
+            // Read value
+            if (offset + value_len > content.len) break;
+            const value = content[offset .. offset + value_len];
+            offset += value_len;
+
+            // Apply the operation
+            const value_struct = ValueStruct{
+                .value = value,
+                .timestamp = timestamp,
+                .meta = meta,
+            };
+
+            self.memtable.put(key, value_struct) catch continue;
+        }
+    }
+
+    /// Verify data integrity and clean up orphaned files
+    fn verifyAndCleanup(self: *Self) !void {
+        // Scan directory for orphaned files
+        var dir = fs.cwd().openDir(self.options.dir, .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var iterator = dir.iterate();
+        while (iterator.next() catch null) |entry| {
+            if (entry.kind != .file) continue;
+
+            // Check for orphaned SST files (not in manifest)
+            if (std.mem.endsWith(u8, entry.name, ".sst")) {
+                var is_orphaned = true;
+
+                // Check if file is referenced in manifest
+                for (0..self.options.max_levels) |level| {
+                    const level_u32 = @as(u32, @intCast(level));
+                    const tables = self.manifest.getTablesAtLevel(level_u32) catch continue;
+
+                    for (tables) |table_info| {
+                        if (std.mem.eql(u8, table_info.path, entry.name)) {
+                            is_orphaned = false;
+                            break;
+                        }
+                    }
+
+                    if (!is_orphaned) break;
+                }
+
+                // Remove orphaned SST files
+                if (is_orphaned) {
+                    var file_path_buf: [512]u8 = undefined;
+                    const file_path = std.fmt.bufPrint(&file_path_buf, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+                    fs.cwd().deleteFile(file_path) catch {};
+                }
+            }
+
+            // Check for orphaned temporary files
+            if (std.mem.startsWith(u8, entry.name, "tmp_") or std.mem.endsWith(u8, entry.name, ".tmp")) {
+                var file_path_buf: [512]u8 = undefined;
+                const file_path = std.fmt.bufPrint(&file_path_buf, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+                fs.cwd().deleteFile(file_path) catch {};
+            }
+        }
+
+        // Verify value log files integrity
+        if (fs.cwd().openDir(self.options.value_dir, .{ .iterate = true })) |vlog_dir| {
+            var mutable_vlog_dir = vlog_dir;
+            defer mutable_vlog_dir.close();
+
+            var vlog_iterator = vlog_dir.iterate();
+            while (vlog_iterator.next() catch null) |entry| {
+                if (entry.kind != .file) continue;
+
+                // Check for orphaned value log files
+                if (std.mem.startsWith(u8, entry.name, "vlog_") and std.mem.endsWith(u8, entry.name, ".vlog")) {
+                    // Parse file ID from filename
+                    const id_str = entry.name[5 .. entry.name.len - 5]; // Remove "vlog_" and ".vlog"
+                    const file_id = std.fmt.parseInt(u32, id_str, 10) catch continue;
+
+                    // Check if this file is still referenced
+                    var is_referenced = false;
+                    for (self.value_log.files.items) |vlog_file| {
+                        if (vlog_file.id == file_id) {
+                            is_referenced = true;
+                            break;
+                        }
+                    }
+
+                    // Remove unreferenced value log files
+                    if (!is_referenced) {
+                        var file_path_buf: [512]u8 = undefined;
+                        const file_path = std.fmt.bufPrint(&file_path_buf, "{s}/{s}", .{ self.options.value_dir, entry.name }) catch continue;
+                        fs.cwd().deleteFile(file_path) catch {};
+                    }
+                }
+            }
+        } else |_| {}
     }
 
     /// Gracefully close the database and cleanup all resources
@@ -300,8 +536,13 @@ pub const DB = struct {
 
             // Check if value is in ValueLog
             if (value.isExternal()) {
-                // TODO: Parse ValuePointer from value.value and read from ValueLog
-                return try self.allocator.dupe(u8, value.value);
+                const ptr = ValuePointer.decode(value.value) catch {
+                    return error.CorruptedData;
+                };
+                const data = self.value_log.read(ptr, self.allocator) catch {
+                    return null;
+                };
+                return data;
             }
 
             return try self.allocator.dupe(u8, value.value);
@@ -315,7 +556,13 @@ pub const DB = struct {
                 }
 
                 if (value.isExternal()) {
-                    return try self.allocator.dupe(u8, value.value);
+                    const ptr = ValuePointer.decode(value.value) catch {
+                        return error.CorruptedData;
+                    };
+                    const data = self.value_log.read(ptr, self.allocator) catch {
+                        return null;
+                    };
+                    return data;
                 }
 
                 return try self.allocator.dupe(u8, value.value);
@@ -329,7 +576,13 @@ pub const DB = struct {
             }
 
             if (value.isExternal()) {
-                return try self.allocator.dupe(u8, value.value);
+                const ptr = ValuePointer.decode(value.value) catch {
+                    return error.CorruptedData;
+                };
+                const data = self.value_log.read(ptr, self.allocator) catch {
+                    return null;
+                };
+                return data;
             }
 
             return try self.allocator.dupe(u8, value.value);
@@ -382,7 +635,9 @@ pub const DB = struct {
             const pointers = try self.value_log.write(&entries);
             defer self.allocator.free(pointers);
 
-            // TODO: Serialize ValuePointer into value_struct.value
+            // Serialize ValuePointer into value_struct.value
+            const encoded_ptr = try pointers[0].encodeAlloc(self.allocator);
+            value_struct.value = encoded_ptr;
             value_struct.setExternal();
         }
 
@@ -623,7 +878,15 @@ pub const DB = struct {
             };
             defer self.allocator.free(pointers);
 
-            // TODO: Serialize ValuePointer into value_struct.value
+            // Serialize ValuePointer into value_struct.value
+            const encoded_ptr = pointers[0].encodeAlloc(self.allocator) catch |err| {
+                req.callback(switch (err) {
+                    error.OutOfMemory => DBError.OutOfMemory,
+                    else => DBError.IOError,
+                });
+                return;
+            };
+            value_struct.value = encoded_ptr;
             value_struct.setExternal();
         }
 
