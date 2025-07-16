@@ -15,7 +15,6 @@ const ValueStruct = @import("core/skiplist.zig").ValueStruct;
 const Options = @import("core/options.zig").Options;
 const Txn = @import("transaction/txn.zig").Txn;
 const TxnOptions = @import("transaction/txn.zig").TxnOptions;
-const TxnError = @import("transaction/txn.zig").TxnError;
 const TxnManager = @import("transaction/txn.zig").TxnManager;
 const ValueLog = @import("storage/vlog.zig").ValueLog;
 const ValuePointer = @import("storage/vlog.zig").ValuePointer;
@@ -26,19 +25,20 @@ const Entry = @import("storage/wal.zig").Entry;
 const CompactionJob = @import("storage/compaction.zig").CompactionJob;
 const CompactionPicker = @import("storage/compaction.zig").CompactionPicker;
 const CompactionStrategy = @import("storage/compaction.zig").CompactionStrategy;
+const ErrorSystem = @import("core/errors.zig");
 
-/// Database errors
-pub const DBError = error{
-    DatabaseClosed,
-    InvalidOptions,
-    CorruptedData,
-    OutOfMemory,
-    IOError,
-    TransactionError,
-    InvalidKey,
-    KeyTooLarge,
-    ValueTooLarge,
-};
+/// Re-export enhanced error types for easier access
+pub const DBError = ErrorSystem.DBError;
+pub const VLogError = ErrorSystem.VLogError;
+pub const ManifestError = ErrorSystem.ManifestError;
+pub const TxnError = ErrorSystem.TxnError;
+pub const TableError = ErrorSystem.TableError;
+pub const CompactionError = ErrorSystem.CompactionError;
+pub const ErrorContext = ErrorSystem.ErrorContext;
+pub const ErrorMetrics = ErrorSystem.ErrorMetrics;
+pub const RetryConfig = ErrorSystem.RetryConfig;
+pub const TxnErrorContext = ErrorSystem.TxnErrorContext;
+pub const ConflictType = ErrorSystem.ConflictType;
 
 /// Database statistics for monitoring
 pub const DBStats = struct {
@@ -199,6 +199,10 @@ pub const DB = struct {
     compaction_picker: CompactionPicker,
     worker_stats: WorkerStats,
     compaction_throttle: CompactionThrottleConfig,
+    
+    // Enhanced error handling
+    error_metrics: ErrorMetrics,
+    retry_config: RetryConfig,
 
     // Synchronization
     memtable_mutex: Mutex,
@@ -294,6 +298,11 @@ pub const DB = struct {
             .compaction_picker = CompactionPicker.init(allocator, .level),
             .worker_stats = WorkerStats.init(),
             .compaction_throttle = CompactionThrottleConfig.init(),
+            
+            // Enhanced error handling
+            .error_metrics = ErrorMetrics.init(allocator),
+            .retry_config = RetryConfig.init(),
+            
             .memtable_mutex = Mutex{},
             .flush_signal = std.Thread.Condition{},
         };
@@ -641,13 +650,20 @@ pub const DB = struct {
 
         // Cleanup enhanced worker management
         self.compaction_picker.deinit();
+        
+        // Cleanup enhanced error handling
+        self.error_metrics.deinit();
 
         self.allocator.destroy(self);
     }
 
-    /// Get a value for the given key with proper MVCC semantics
+    /// Get a value for the given key with proper MVCC semantics and enhanced error handling
     pub fn get(self: *Self, key: []const u8) !?[]const u8 {
+        const context = ErrorContext.init("get").withKey(key);
+        
         if (self.close_signal.load(.acquire)) {
+            self.error_metrics.recordError(DBError, DBError.DatabaseClosed);
+            ErrorSystem.logError(DBError, DBError.DatabaseClosed, context);
             return DBError.DatabaseClosed;
         }
 
@@ -656,7 +672,10 @@ pub const DB = struct {
 
         // Validate key
         if (key.len == 0 or key.len > 1024 * 1024) {
-            return DBError.InvalidKey;
+            const err = if (key.len == 0) DBError.InvalidKey else DBError.KeyTooLarge;
+            self.error_metrics.recordError(DBError, err);
+            ErrorSystem.logError(DBError, err, context);
+            return err;
         }
 
         // Check current memtable first
@@ -668,9 +687,18 @@ pub const DB = struct {
             // Check if value is in ValueLog
             if (value.isExternal()) {
                 const ptr = ValuePointer.decode(value.value) catch {
-                    return error.CorruptedData;
+                    self.error_metrics.recordError(DBError, DBError.CorruptedData);
+                    ErrorSystem.logError(DBError, DBError.CorruptedData, context.withInfo("ValuePointer decode failed"));
+                    return DBError.CorruptedData;
                 };
-                return self.value_log.read(ptr, self.allocator);
+                return self.value_log.read(ptr, self.allocator) catch |err| {
+                    self.error_metrics.recordError(DBError, DBError.IOError);
+                    ErrorSystem.logError(DBError, DBError.IOError, context.withInfo(@errorName(err)));
+                    return switch (err) {
+                        error.OutOfMemory => DBError.OutOfMemory,
+                        else => DBError.IOError,
+                    };
+                };
             }
 
             return try self.allocator.dupe(u8, value.value);
@@ -685,26 +713,76 @@ pub const DB = struct {
 
                 if (value.isExternal()) {
                     const ptr = ValuePointer.decode(value.value) catch {
-                        return error.CorruptedData;
+                        self.error_metrics.recordError(DBError, DBError.CorruptedData);
+                        ErrorSystem.logError(DBError, DBError.CorruptedData, context.withInfo("ValuePointer decode failed in immutable"));
+                        return DBError.CorruptedData;
                     };
-                    return self.value_log.read(ptr, self.allocator);
+                    return self.value_log.read(ptr, self.allocator) catch |err| {
+                        self.error_metrics.recordError(DBError, DBError.IOError);
+                        ErrorSystem.logError(DBError, DBError.IOError, context.withInfo(@errorName(err)));
+                        return switch (err) {
+                            error.OutOfMemory => DBError.OutOfMemory,
+                            else => DBError.IOError,
+                        };
+                    };
                 }
 
                 return try self.allocator.dupe(u8, value.value);
             }
         }
 
-        // Check SST levels
-        if (try self.levels.get(key)) |value| {
+        // Check SST levels with retry mechanism
+        const levels_result = blk: {
+            var attempt: u32 = 0;
+            const max_retries = self.retry_config.max_retries;
+            
+            while (attempt <= max_retries) {
+                const result = self.levels.get(key) catch |err| {
+                    self.error_metrics.recordError(anyerror, err);
+                    
+                    if (attempt < max_retries) {
+                        const delay = self.retry_config.calculateDelay(attempt);
+                        std.time.sleep(delay * std.time.ns_per_ms);
+                        attempt += 1;
+                        continue;
+                    }
+                    
+                    break :blk err;
+                };
+                
+                break :blk result;
+            }
+            
+            break :blk error.MaxRetriesExceeded;
+        } catch |err| {
+            self.error_metrics.recordError(DBError, DBError.IOError);
+            ErrorSystem.logError(DBError, DBError.IOError, context.withInfo(@errorName(err)));
+            return switch (err) {
+                error.OutOfMemory => DBError.OutOfMemory,
+                error.MaxRetriesExceeded => DBError.MaxRetriesExceeded,
+                else => DBError.IOError,
+            };
+        };
+        
+        if (levels_result) |value| {
             if (value.isDeleted()) {
                 return null;
             }
 
             if (value.isExternal()) {
                 const ptr = ValuePointer.decode(value.value) catch {
-                    return error.CorruptedData;
+                    self.error_metrics.recordError(DBError, DBError.CorruptedData);
+                    ErrorSystem.logError(DBError, DBError.CorruptedData, context.withInfo("ValuePointer decode failed in SST"));
+                    return DBError.CorruptedData;
                 };
-                return self.value_log.read(ptr, self.allocator);
+                return self.value_log.read(ptr, self.allocator) catch |err| {
+                    self.error_metrics.recordError(DBError, DBError.IOError);
+                    ErrorSystem.logError(DBError, DBError.IOError, context.withInfo(@errorName(err)));
+                    return switch (err) {
+                        error.OutOfMemory => DBError.OutOfMemory,
+                        else => DBError.IOError,
+                    };
+                };
             }
 
             return try self.allocator.dupe(u8, value.value);
@@ -715,15 +793,24 @@ pub const DB = struct {
 
     /// Set a key-value pair with enhanced error handling
     pub fn set(self: *Self, key: []const u8, value: []const u8) !void {
+        const context = ErrorContext.init("set").withKey(key);
+        
         if (self.close_signal.load(.acquire)) {
+            self.error_metrics.recordError(DBError, DBError.DatabaseClosed);
+            ErrorSystem.logError(DBError, DBError.DatabaseClosed, context);
             return DBError.DatabaseClosed;
         }
 
         // Validate inputs
         if (key.len == 0 or key.len > 1024 * 1024) {
-            return DBError.KeyTooLarge;
+            const err = if (key.len == 0) DBError.InvalidKey else DBError.KeyTooLarge;
+            self.error_metrics.recordError(DBError, err);
+            ErrorSystem.logError(DBError, err, context);
+            return err;
         }
         if (value.len > 1024 * 1024 * 1024) {
+            self.error_metrics.recordError(DBError, DBError.ValueTooLarge);
+            ErrorSystem.logError(DBError, DBError.ValueTooLarge, context);
             return DBError.ValueTooLarge;
         }
 
@@ -1330,5 +1417,35 @@ pub const DB = struct {
                 }
             }
         }
+    }
+
+    /// Get error metrics for monitoring
+    pub fn getErrorMetrics(self: *const Self) *const ErrorMetrics {
+        return &self.error_metrics;
+    }
+
+    /// Get current error rate (errors per second)
+    pub fn getErrorRate(self: *const Self, window_ms: u64) f64 {
+        return self.error_metrics.getErrorRate(window_ms);
+    }
+
+    /// Check if error rate is above threshold
+    pub fn isErrorRateHigh(self: *const Self, threshold: f64, window_ms: u64) bool {
+        return self.getErrorRate(window_ms) > threshold;
+    }
+
+    /// Get detailed error count for a specific error type
+    pub fn getErrorCount(self: *const Self, comptime ErrorType: type, error_value: ErrorType) u64 {
+        return self.error_metrics.getErrorCount(ErrorType, error_value);
+    }
+
+    /// Update retry configuration
+    pub fn updateRetryConfig(self: *Self, config: RetryConfig) void {
+        self.retry_config = config;
+    }
+
+    /// Get current retry configuration
+    pub fn getRetryConfig(self: *const Self) RetryConfig {
+        return self.retry_config;
     }
 };

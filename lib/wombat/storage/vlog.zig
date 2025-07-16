@@ -8,6 +8,9 @@ const MmapFile = @import("../io/mmap.zig").MmapFile;
 const Entry = @import("wal.zig").Entry;
 const CompressionType = @import("../core/options.zig").CompressionType;
 const Compressor = @import("../compression/compressor.zig").Compressor;
+const ErrorSystem = @import("../core/errors.zig");
+const VLogError = ErrorSystem.VLogError;
+const ErrorContext = ErrorSystem.ErrorContext;
 
 /// Pointer to a value stored in the value log
 pub const ValuePointer = struct {
@@ -20,9 +23,9 @@ pub const ValuePointer = struct {
 
     const ENCODED_SIZE = @sizeOf(u32) + @sizeOf(u64) + @sizeOf(u32);
 
-    pub fn encode(self: *const ValuePointer, buf: []u8) !void {
+    pub fn encode(self: *const ValuePointer, buf: []u8) VLogError!void {
         if (buf.len < ENCODED_SIZE) {
-            return error.BufferTooSmall;
+            return VLogError.InvalidSize;
         }
 
         var offset: usize = 0;
@@ -40,9 +43,9 @@ pub const ValuePointer = struct {
         return buf;
     }
 
-    pub fn decode(buf: []const u8) !ValuePointer {
+    pub fn decode(buf: []const u8) VLogError!ValuePointer {
         if (buf.len < ENCODED_SIZE) {
-            return error.BufferTooSmall;
+            return VLogError.InvalidSize;
         }
 
         var offset: usize = 0;
@@ -175,7 +178,7 @@ pub const VLogFile = struct {
     }
 
     /// Write an entry to the file, returning its pointer
-    pub fn writeEntry(self: *Self, entry: Entry) !ValuePointer {
+    pub fn writeEntry(self: *Self, entry: Entry) VLogError!ValuePointer {
         // Compress the value if compression is enabled
         const compressor = Compressor.init(self.allocator, self.compression);
         const compressed_value = if (compressor.shouldCompress(entry.value))
@@ -191,7 +194,7 @@ pub const VLogFile = struct {
 
         // Check if file has space
         if (current_offset + total_size > self.max_size) {
-            return error.FileFull;
+            return VLogError.FileFull;
         }
 
         // Calculate checksum for integrity (on compressed data)
@@ -224,13 +227,13 @@ pub const VLogFile = struct {
     }
 
     /// Read an entry from the file using a pointer
-    pub fn readEntry(self: *Self, ptr: ValuePointer, allocator: Allocator) ![]u8 {
+    pub fn readEntry(self: *Self, ptr: ValuePointer, allocator: Allocator) VLogError![]u8 {
         if (ptr.file_id != self.id) {
-            return error.WrongFile;
+            return VLogError.WrongFile;
         }
 
         if (ptr.offset + ptr.size > self.write_offset.load(.acquire)) {
-            return error.InvalidPointer;
+            return VLogError.InvalidPointer;
         }
 
         // Read header
@@ -240,7 +243,7 @@ pub const VLogFile = struct {
 
         // Validate size consistency
         if (entry_size + HEADER_SIZE != ptr.size) {
-            return error.CorruptedEntry;
+            return VLogError.CorruptedEntry;
         }
 
         // Read value data (compressed)
@@ -249,7 +252,7 @@ pub const VLogFile = struct {
         // Verify checksum
         const calculated_checksum = calculateChecksum(compressed_buf);
         if (calculated_checksum != stored_checksum) {
-            return error.ChecksumMismatch;
+            return VLogError.ChecksumMismatch;
         }
 
         // Decompress if needed
@@ -378,7 +381,7 @@ pub const ValueLog = struct {
     }
 
     /// Write entries to value log, returning pointers
-    pub fn write(self: *Self, entries: []const Entry) ![]ValuePointer {
+    pub fn write(self: *Self, entries: []const Entry) VLogError![]ValuePointer {
         self.mutex.lock();
         defer self.mutex.unlock();
 
@@ -388,7 +391,7 @@ pub const ValueLog = struct {
         for (entries, 0..) |entry, i| {
             // Only store large values in value log
             if (entry.value.len < self.threshold) {
-                return error.ValueTooSmall;
+                return VLogError.InvalidSize;
             }
 
             // Ensure we have an active file with space
@@ -402,11 +405,11 @@ pub const ValueLog = struct {
     }
 
     /// Read value using pointer
-    pub fn read(self: *Self, ptr: ValuePointer, allocator: Allocator) ![]u8 {
+    pub fn read(self: *Self, ptr: ValuePointer, allocator: Allocator) VLogError![]u8 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        const file = self.files_by_id.get(ptr.file_id) orelse return error.FileNotFound;
+        const file = self.files_by_id.get(ptr.file_id) orelse return VLogError.FileNotFound;
         return try file.readEntry(ptr, allocator);
     }
 
