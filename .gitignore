@@ -2,6 +2,8 @@
 zig-cache/
 zig-out/
 *.a
+*.so
+*.dylib
 
 # Test data directories
 test_data/
