@@ -65,7 +65,7 @@ pub const BloomFilter = struct {
 
     fn optimalBitCount(expected_items: usize, false_positive_rate: f64) usize {
         const ln2 = @log(2.0);
-        const m = -1.0 * @as(f64, @floatFromInt(expected_items)) * math.log(false_positive_rate) / (ln2 * ln2);
+        const m = -1.0 * @as(f64, @floatFromInt(expected_items)) * @log(false_positive_rate) / (ln2 * ln2);
         return @intFromFloat(@max(1.0, m));
     }
 
@@ -116,7 +116,7 @@ pub const BloomFilter = struct {
 
         var offset: usize = 0;
 
-        std.mem.writeInt(u64, buf[offset .. offset + 8], self.bit_count, .little);
+        std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], self.bit_count, .little);
         offset += 8;
 
         buf[offset] = self.hash_count;
@@ -135,7 +135,7 @@ pub const BloomFilter = struct {
 
         var offset: usize = 0;
 
-        const bit_count = std.mem.readInt(u64, buf[offset .. offset + 8], .little);
+        const bit_count = std.mem.readInt(u64, buf[offset .. offset + 8][0..8], .little);
         offset += 8;
 
         const hash_count = buf[offset];

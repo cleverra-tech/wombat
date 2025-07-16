@@ -20,6 +20,11 @@ pub const Entry = @import("wombat/storage/wal.zig").Entry;
 pub const MemTable = @import("wombat/storage/memtable.zig").MemTable;
 pub const Table = @import("wombat/storage/table.zig").Table;
 pub const TableBuilder = @import("wombat/storage/table.zig").TableBuilder;
+pub const TableIndex = @import("wombat/storage/table.zig").TableIndex;
+pub const TableIterator = @import("wombat/storage/table.zig").TableIterator;
+pub const TableError = @import("wombat/storage/table.zig").TableError;
+pub const TableStats = @import("wombat/storage/table.zig").TableStats;
+pub const IndexEntry = @import("wombat/storage/table.zig").IndexEntry;
 pub const LevelsController = @import("wombat/storage/levels.zig").LevelsController;
 pub const ManifestFile = @import("wombat/storage/manifest.zig").ManifestFile;
 pub const TableInfo = @import("wombat/storage/manifest.zig").TableInfo;
@@ -288,6 +293,83 @@ test "Channel integration with database operations" {
     const stats = write_channel.getStats();
     std.testing.expect(stats.sends_total == 1) catch unreachable;
     std.testing.expect(stats.receives_total == 1) catch unreachable;
+}
+
+test "TableBuilder integration with SSTable format" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const test_path = "test_integration.sst";
+    defer std.fs.cwd().deleteFile(test_path) catch {};
+
+    const db_options = Options{
+        .dir = ".",
+        .value_dir = ".",
+        .mem_table_size = 1024 * 1024,
+        .num_memtables = 5,
+        .max_levels = 7,
+        .level_size_multiplier = 10,
+        .base_table_size = 2 * 1024 * 1024,
+        .num_compactors = 4,
+        .num_level_zero_tables = 5,
+        .num_level_zero_tables_stall = 15,
+        .value_threshold = 1024 * 1024,
+        .value_log_file_size = 1024 * 1024 * 1024,
+        .block_size = 4 * 1024,
+        .bloom_false_positive = 0.01,
+        .compression = .none,
+        .sync_writes = false,
+        .detect_conflicts = true,
+        .verify_checksums = true,
+    };
+
+    // Build a table
+    var builder = try TableBuilder.init(allocator, test_path, db_options, 1);
+    defer builder.deinit();
+
+    try builder.add("apple", ValueStruct{ .value = "fruit", .timestamp = 10, .meta = 0 });
+    try builder.add("banana", ValueStruct{ .value = "yellow", .timestamp = 20, .meta = 0 });
+    try builder.add("cherry", ValueStruct{ .value = "red", .timestamp = 30, .meta = 0 });
+    try builder.finish();
+
+    // Read the table back
+    var sstable = try Table.open(allocator, test_path, 123);
+    defer sstable.close();
+
+    // Test basic properties
+    std.testing.expect(sstable.getFileId() == 123) catch unreachable;
+    std.testing.expect(sstable.getLevel() == 1) catch unreachable;
+
+    std.testing.expect(std.mem.eql(u8, sstable.getSmallestKey(), "apple")) catch unreachable;
+    std.testing.expect(std.mem.eql(u8, sstable.getBiggestKey(), "cherry")) catch unreachable;
+
+    // Test key lookups
+    const apple_result = try sstable.get("apple");
+    std.testing.expect(apple_result != null) catch unreachable;
+    std.testing.expect(std.mem.eql(u8, apple_result.?.value, "fruit")) catch unreachable;
+    std.testing.expect(apple_result.?.timestamp == 10) catch unreachable;
+    // Free the allocated value memory
+    allocator.free(apple_result.?.value);
+
+    const banana_result = try sstable.get("banana");
+    std.testing.expect(banana_result != null) catch unreachable;
+    std.testing.expect(std.mem.eql(u8, banana_result.?.value, "yellow")) catch unreachable;
+    // Free the allocated value memory
+    allocator.free(banana_result.?.value);
+
+    // Test non-existent key
+    const grape_result = try sstable.get("grape");
+    std.testing.expect(grape_result == null) catch unreachable;
+
+    // Test key range overlaps
+    std.testing.expect(sstable.overlapsWithKeyRange("a", "b")) catch unreachable; // Should overlap with apple
+    std.testing.expect(!sstable.overlapsWithKeyRange("d", "z")) catch unreachable; // Should not overlap
+
+    // Test statistics
+    const stats = sstable.getStats();
+    std.testing.expect(stats.file_size > 0) catch unreachable;
+    std.testing.expect(stats.key_count > 0) catch unreachable;
 }
 
 fn cleanupVLogTestDir(dir_path: []const u8) void {
