@@ -28,6 +28,9 @@ pub const VLogFile = @import("wombat/storage/vlog.zig").VLogFile;
 // Transaction modules
 pub const Oracle = @import("wombat/transaction/oracle.zig").Oracle;
 pub const Transaction = @import("wombat/transaction/oracle.zig").Transaction;
+pub const WaterMark = @import("wombat/transaction/watermark.zig").WaterMark;
+pub const WaterMarkGroup = @import("wombat/transaction/watermark.zig").WaterMarkGroup;
+pub const WaterMarkSnapshot = @import("wombat/transaction/watermark.zig").WaterMarkSnapshot;
 
 // Main database
 pub const DB = @import("wombat/db.zig").DB;
@@ -45,6 +48,7 @@ pub const levels = @import("wombat/storage/levels.zig");
 pub const manifest = @import("wombat/storage/manifest.zig");
 pub const vlog = @import("wombat/storage/vlog.zig");
 pub const oracle = @import("wombat/transaction/oracle.zig");
+pub const watermark = @import("wombat/transaction/watermark.zig");
 pub const channel = @import("wombat/core/channel.zig");
 pub const db = @import("wombat/db.zig");
 
@@ -105,6 +109,36 @@ test "ValueLog basic operations" {
     defer allocator.free(read_value);
 
     std.testing.expect(std.mem.eql(u8, read_value, entries[0].value)) catch unreachable;
+}
+
+test "WaterMark transaction ordering" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const read_mark = try WaterMark.init(allocator, "read_transactions");
+    defer read_mark.deinit();
+
+    const txn_mark = try WaterMark.init(allocator, "commit_transactions");
+    defer txn_mark.deinit();
+
+    // Test transaction lifecycle with watermarks
+    try read_mark.begin(100);
+    try txn_mark.begin(100);
+
+    std.testing.expect(read_mark.getWaterMark() == 100) catch unreachable;
+    std.testing.expect(txn_mark.getWaterMark() == 100) catch unreachable;
+
+    // Complete read transaction
+    read_mark.done(100);
+    std.testing.expect(read_mark.getWaterMark() == std.math.maxInt(u64) - 1) catch unreachable;
+
+    // Commit transaction still pending
+    std.testing.expect(txn_mark.getWaterMark() == 100) catch unreachable;
+
+    // Complete commit transaction
+    txn_mark.done(100);
+    std.testing.expect(txn_mark.getWaterMark() == std.math.maxInt(u64) - 1) catch unreachable;
 }
 
 fn cleanupVLogTestDir(dir_path: []const u8) void {
