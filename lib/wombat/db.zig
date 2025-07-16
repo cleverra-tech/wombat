@@ -16,6 +16,7 @@ const TxnOptions = @import("transaction/txn.zig").TxnOptions;
 const TxnError = @import("transaction/txn.zig").TxnError;
 const TxnManager = @import("transaction/txn.zig").TxnManager;
 const ValueLog = @import("storage/vlog.zig").ValueLog;
+const ValuePointer = @import("storage/vlog.zig").ValuePointer;
 const ManifestFile = @import("storage/manifest.zig").ManifestFile;
 const TableInfo = @import("storage/manifest.zig").TableInfo;
 const WaterMark = @import("transaction/watermark.zig").WaterMark;
@@ -300,8 +301,10 @@ pub const DB = struct {
 
             // Check if value is in ValueLog
             if (value.isExternal()) {
-                // TODO: Parse ValuePointer from value.value and read from ValueLog
-                return try self.allocator.dupe(u8, value.value);
+                const ptr = ValuePointer.decode(value.value) catch {
+                    return error.CorruptedData;
+                };
+                return self.value_log.read(ptr, self.allocator);
             }
 
             return try self.allocator.dupe(u8, value.value);
@@ -315,7 +318,10 @@ pub const DB = struct {
                 }
 
                 if (value.isExternal()) {
-                    return try self.allocator.dupe(u8, value.value);
+                    const ptr = ValuePointer.decode(value.value) catch {
+                        return error.CorruptedData;
+                    };
+                    return self.value_log.read(ptr, self.allocator);
                 }
 
                 return try self.allocator.dupe(u8, value.value);
@@ -329,7 +335,10 @@ pub const DB = struct {
             }
 
             if (value.isExternal()) {
-                return try self.allocator.dupe(u8, value.value);
+                const ptr = ValuePointer.decode(value.value) catch {
+                    return error.CorruptedData;
+                };
+                return self.value_log.read(ptr, self.allocator);
             }
 
             return try self.allocator.dupe(u8, value.value);
@@ -382,7 +391,9 @@ pub const DB = struct {
             const pointers = try self.value_log.write(&entries);
             defer self.allocator.free(pointers);
 
-            // TODO: Serialize ValuePointer into value_struct.value
+            // Serialize ValuePointer into value_struct.value
+            const encoded_ptr = try pointers[0].encodeAlloc(self.allocator);
+            value_struct.value = encoded_ptr;
             value_struct.setExternal();
         }
 
@@ -623,7 +634,15 @@ pub const DB = struct {
             };
             defer self.allocator.free(pointers);
 
-            // TODO: Serialize ValuePointer into value_struct.value
+            // Serialize ValuePointer into value_struct.value
+            const encoded_ptr = pointers[0].encodeAlloc(self.allocator) catch |err| {
+                req.callback(switch (err) {
+                    error.OutOfMemory => DBError.OutOfMemory,
+                    else => DBError.IOError,
+                });
+                return;
+            };
+            value_struct.value = encoded_ptr;
             value_struct.setExternal();
         }
 
