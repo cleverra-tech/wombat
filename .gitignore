@@ -12,6 +12,9 @@ wombat_data/
 wombat_bench_data/
 ./data/
 
+# Benchmark results
+benchmark_results/
+
 # Temporary directories and files
 tmp/
 *.tmp

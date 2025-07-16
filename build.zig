@@ -53,6 +53,23 @@ pub fn build(b: *std.Build) void {
     all_tests_step.dependOn(test_step);
     all_tests_step.dependOn(recovery_test_step);
 
+    // Add benchmarks
+    const benchmarks = b.addExecutable(.{
+        .name = "benchmarks",
+        .root_module = b.createModule(.{
+            .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = "benchmarks/benchmark.zig" } },
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    benchmarks.root_module.addImport("wombat", wombat_module);
+    b.installArtifact(benchmarks);
+
+    // Add benchmark run step
+    const benchmark_run = b.addRunArtifact(benchmarks);
+    const benchmark_step = b.step("benchmark", "Run performance benchmarks");
+    benchmark_step.dependOn(&benchmark_run.step);
+
     // Documentation
     const docs = b.addInstallDirectory(.{
         .source_dir = lib.getEmittedDocs(),

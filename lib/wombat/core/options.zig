@@ -148,12 +148,12 @@ pub const Options = struct {
     bloom_expected_items: u32 = 10000,
     compression: CompressionType = .zlib,
     compression_level: i32 = 6,
-    
+
     // Checksum and verification
     checksum_type: ChecksumType = .crc32,
     verify_checksums: bool = true,
     verify_checksums_on_read: bool = false,
-    
+
     // Basic safety settings
     sync_writes: bool = false,
     detect_conflicts: bool = true,
@@ -220,14 +220,14 @@ pub const Options = struct {
         if (self.validation_config.max_batch_bytes == 0) return error.InvalidMaxBatchBytes;
         if (self.validation_config.max_open_files == 0) return error.InvalidMaxOpenFiles;
         if (self.validation_config.max_file_size == 0) return error.InvalidMaxFileSize;
-        
+
         // Validate transaction config
         if (self.transaction_config.max_read_keys == 0) return error.InvalidMaxReadKeys;
         if (self.transaction_config.max_write_keys == 0) return error.InvalidMaxWriteKeys;
         if (self.transaction_config.gc_watermark_ratio <= 0.0 or self.transaction_config.gc_watermark_ratio >= 1.0) {
             return error.InvalidGCWatermarkRatio;
         }
-        
+
         // Validate retry config
         if (self.retry_config.max_retries == 0) return error.InvalidMaxRetries;
         if (self.retry_config.initial_delay_ms == 0) return error.InvalidInitialDelay;
@@ -236,32 +236,32 @@ pub const Options = struct {
         if (self.retry_config.jitter_ratio < 0.0 or self.retry_config.jitter_ratio > 1.0) {
             return error.InvalidJitterRatio;
         }
-        
+
         // Validate I/O config
         if (self.io_config.compaction_throttle_bytes_per_sec == 0) return error.InvalidCompactionThrottle;
         if (self.io_config.write_throttle_bytes_per_sec == 0) return error.InvalidWriteThrottle;
         if (self.io_config.read_ahead_size == 0) return error.InvalidReadAheadSize;
         if (self.io_config.write_buffer_size == 0) return error.InvalidWriteBufferSize;
         if (self.io_config.sync_frequency_ms == 0) return error.InvalidSyncFrequency;
-        
+
         // Validate cache config
         if (self.cache_config.block_cache_size == 0) return error.InvalidBlockCacheSize;
         if (self.cache_config.table_cache_size == 0) return error.InvalidTableCacheSize;
         if (self.cache_config.filter_cache_size == 0) return error.InvalidFilterCacheSize;
         if (self.cache_config.cache_shards == 0) return error.InvalidCacheShards;
-        
+
         // Validate monitoring config
         if (self.monitoring_config.metrics_interval_ms == 0) return error.InvalidMetricsInterval;
         if (self.monitoring_config.max_error_history == 0) return error.InvalidMaxErrorHistory;
         if (self.monitoring_config.slow_query_threshold_ms == 0) return error.InvalidSlowQueryThreshold;
-        
+
         // Validate recovery config
         if (self.recovery_config.wal_file_size == 0) return error.InvalidWALFileSize;
         if (self.recovery_config.checkpoint_interval_ms == 0) return error.InvalidCheckpointInterval;
         if (self.recovery_config.manifest_rewrite_threshold == 0) return error.InvalidManifestRewriteThreshold;
         if (self.recovery_config.crash_recovery_timeout_ms == 0) return error.InvalidCrashRecoveryTimeout;
         if (self.recovery_config.backup_retention_days == 0) return error.InvalidBackupRetentionDays;
-        
+
         // Validate encryption config
         if (self.encryption_config.enable_encryption and self.encryption_config.encryption_key == null) {
             return error.MissingEncryptionKey;
@@ -545,9 +545,9 @@ pub const Options = struct {
 
     /// Calculate total memory usage for configured cache sizes
     pub fn calculateCacheMemoryUsage(self: *const Self) usize {
-        return self.cache_config.block_cache_size + 
-               self.cache_config.table_cache_size + 
-               self.cache_config.filter_cache_size;
+        return self.cache_config.block_cache_size +
+            self.cache_config.table_cache_size +
+            self.cache_config.filter_cache_size;
     }
 
     /// Calculate total memory usage for configured memtables
@@ -557,10 +557,10 @@ pub const Options = struct {
 
     /// Calculate estimated total memory usage
     pub fn calculateEstimatedMemoryUsage(self: *const Self) usize {
-        return self.calculateCacheMemoryUsage() + 
-               self.calculateMemTableMemoryUsage() + 
-               self.io_config.write_buffer_size +
-               self.io_config.read_ahead_size;
+        return self.calculateCacheMemoryUsage() +
+            self.calculateMemTableMemoryUsage() +
+            self.io_config.write_buffer_size +
+            self.io_config.read_ahead_size;
     }
 
     /// Get optimal bloom filter size for current configuration
@@ -576,18 +576,18 @@ pub const Options = struct {
 
     /// Check if the configuration is suitable for high concurrency
     pub fn isSuitableForHighConcurrency(self: *const Self) bool {
-        return self.num_compactors >= 4 and 
-               self.cache_config.cache_shards >= 8 and
-               self.transaction_config.max_read_keys >= 1000 and
-               self.transaction_config.max_write_keys >= 100;
+        return self.num_compactors >= 4 and
+            self.cache_config.cache_shards >= 8 and
+            self.transaction_config.max_read_keys >= 1000 and
+            self.transaction_config.max_write_keys >= 100;
     }
 
     /// Check if the configuration is suitable for large datasets
     pub fn isSuitableForLargeDatasets(self: *const Self) bool {
         return self.mem_table_size >= 64 * 1024 * 1024 and // 64MB
-               self.value_log_file_size >= 1024 * 1024 * 1024 and // 1GB
-               self.cache_config.block_cache_size >= 256 * 1024 * 1024 and // 256MB
-               self.max_levels >= 5;
+            self.value_log_file_size >= 1024 * 1024 * 1024 and // 1GB
+            self.cache_config.block_cache_size >= 256 * 1024 * 1024 and // 256MB
+            self.max_levels >= 5;
     }
 
     /// Get a summary of the configuration for logging/debugging
@@ -611,44 +611,46 @@ pub const Options = struct {
     /// Validate configuration compatibility
     pub fn validateCompatibility(self: *const Self) !void {
         // Check if compression and encryption are compatible
-        if (self.encryption_config.enable_encryption and 
-            self.encryption_config.compress_before_encrypt and 
-            self.compression == .none) {
+        if (self.encryption_config.enable_encryption and
+            self.encryption_config.compress_before_encrypt and
+            self.compression == .none)
+        {
             return error.IncompatibleCompressionEncryption;
         }
-        
+
         // Check if cache sizes are reasonable relative to memory
         const cache_usage = self.calculateCacheMemoryUsage();
         const memtable_usage = self.calculateMemTableMemoryUsage();
         const total_usage = cache_usage + memtable_usage;
-        
+
         if (total_usage > 8 * 1024 * 1024 * 1024) { // 8GB warning threshold
             return error.ExcessiveMemoryUsage;
         }
-        
+
         // Check if I/O throttling is reasonable
         if (self.io_config.compaction_throttle_bytes_per_sec > 1024 * 1024 * 1024) { // 1GB/s
             return error.ExcessiveIOThrottling;
         }
-        
+
         // Check if value log settings are compatible
         if (self.value_threshold > self.value_log_file_size / 10) {
             return error.IncompatibleValueLogSettings;
         }
-        
+
         // Check if transaction limits are reasonable
         if (self.transaction_config.max_read_keys > 1000000) { // 1M keys
             return error.ExcessiveTransactionLimits;
         }
-        
+
         // Check if retry settings are reasonable
         if (self.retry_config.max_delay_ms > 300000) { // 5 minutes
             return error.ExcessiveRetryDelay;
         }
-        
+
         // Check if monitoring settings are compatible
-        if (self.monitoring_config.enable_metrics and 
-            self.monitoring_config.metrics_interval_ms < 100) {
+        if (self.monitoring_config.enable_metrics and
+            self.monitoring_config.metrics_interval_ms < 100)
+        {
             return error.ExcessiveMonitoringFrequency;
         }
     }
