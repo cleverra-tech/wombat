@@ -37,7 +37,7 @@ pub const TransactionConfig = struct {
     detect_conflicts: bool = true,
     conflict_detection_mode: ConflictDetectionMode = .basic,
     max_pending_writes: u32 = 1000,
-    gc_watermark_ratio: f64 = 0.1,
+    space_reclaim_watermark_ratio: f64 = 0.1,
     txn_timeout_ms: u32 = 30000,
 };
 
@@ -139,7 +139,7 @@ pub const Options = struct {
     // Value log settings
     value_threshold: usize = 1024 * 1024,
     value_log_file_size: usize = 1024 * 1024 * 1024,
-    value_log_gc_threshold: f64 = 0.7,
+    value_log_space_reclaim_threshold: f64 = 0.7,
     value_log_max_entries: u32 = 1000000,
 
     // Performance settings
@@ -185,8 +185,8 @@ pub const Options = struct {
         if (self.compression_level < 0 or self.compression_level > 9) {
             @compileError("compression_level must be between 0 and 9");
         }
-        if (self.value_log_gc_threshold <= 0.0 or self.value_log_gc_threshold >= 1.0) {
-            @compileError("value_log_gc_threshold must be between 0.0 and 1.0");
+        if (self.value_log_space_reclaim_threshold <= 0.0 or self.value_log_space_reclaim_threshold >= 1.0) {
+            @compileError("value_log_space_reclaim_threshold must be between 0.0 and 1.0");
         }
         if (self.compaction_priority_threshold <= 0.0 or self.compaction_priority_threshold >= 1.0) {
             @compileError("compaction_priority_threshold must be between 0.0 and 1.0");
@@ -208,8 +208,8 @@ pub const Options = struct {
         if (self.compression_level < 0 or self.compression_level > 9) {
             return error.InvalidCompressionLevel;
         }
-        if (self.value_log_gc_threshold <= 0.0 or self.value_log_gc_threshold >= 1.0) {
-            return error.InvalidValueLogGCThreshold;
+        if (self.value_log_space_reclaim_threshold <= 0.0 or self.value_log_space_reclaim_threshold >= 1.0) {
+            return error.InvalidValueLogSpaceReclaimThreshold;
         }
         if (self.compaction_priority_threshold <= 0.0 or self.compaction_priority_threshold >= 1.0) {
             return error.InvalidCompactionPriorityThreshold;
@@ -224,8 +224,8 @@ pub const Options = struct {
         // Validate transaction config
         if (self.transaction_config.max_read_keys == 0) return error.InvalidMaxReadKeys;
         if (self.transaction_config.max_write_keys == 0) return error.InvalidMaxWriteKeys;
-        if (self.transaction_config.gc_watermark_ratio <= 0.0 or self.transaction_config.gc_watermark_ratio >= 1.0) {
-            return error.InvalidGCWatermarkRatio;
+        if (self.transaction_config.space_reclaim_watermark_ratio <= 0.0 or self.transaction_config.space_reclaim_watermark_ratio >= 1.0) {
+            return error.InvalidSpaceReclaimWatermarkRatio;
         }
 
         // Validate retry config

@@ -10,7 +10,7 @@ zig-out/
 test_data/
 wombat_data/
 wombat_bench_data/
-./data/
+data/
 
 # Benchmark results
 benchmark_results/

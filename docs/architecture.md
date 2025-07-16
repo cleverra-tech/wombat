@@ -4,39 +4,65 @@ Wombat is a high-performance LSM-Tree (Log-Structured Merge-Tree) key-value data
 
 ## System Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Wombat Database                         │
-├─────────────────────────────────────────────────────────────────┤
-│  Client API Layer                                              │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│  │    Get      │ │    Set      │ │   Delete    │              │
-│  └─────────────┘ └─────────────┘ └─────────────┘              │
-├─────────────────────────────────────────────────────────────────┤
-│  Transaction Layer                                              │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│  │   Oracle    │ │ Conflict    │ │   Commit    │              │
-│  │  (Timestamps)│ │ Detection   │ │   Handler   │              │
-│  └─────────────┘ └─────────────┘ └─────────────┘              │
-├─────────────────────────────────────────────────────────────────┤
-│  Storage Engine                                                 │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│  │  MemTable   │ │  Value Log  │ │  SSTable    │              │
-│  │ (SkipList)  │ │   (VLog)    │ │  (L0-L6)    │              │
-│  └─────────────┘ └─────────────┘ └─────────────┘              │
-├─────────────────────────────────────────────────────────────────┤
-│  Background Services                                            │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│  │ Compaction  │ │ Value Log   │ │    WAL      │              │
-│  │   Worker    │ │   GC        │ │   Sync      │              │
-│  └─────────────┘ └─────────────┘ └─────────────┘              │
-├─────────────────────────────────────────────────────────────────┤
-│  Persistent Storage                                             │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐              │
-│  │   Manifest  │ │    WAL      │ │    Data     │              │
-│  │    File     │ │   Files     │ │   Files     │              │
-│  └─────────────┘ └─────────────┘ └─────────────┘              │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph "Client API Layer"
+        A[DB Interface] --> B[Get/Set/Delete]
+        C[Transaction API] --> D[Begin/Commit/Abort]
+        E[Batch Operations] --> F[Batch Write]
+    end
+    
+    subgraph "Transaction Layer"
+        G[Oracle] --> H[Timestamp Management]
+        I[Conflict Detection] --> J[MVCC Control]
+        K[Transaction Manager] --> L[Read/Write Sets]
+    end
+    
+    subgraph "Storage Engine"
+        M[MemTable] --> N[SkipList Structure]
+        O[Value Log] --> P[Large Value Storage]
+        Q[SSTable] --> R[L0-L6 Hierarchy]
+        S[Bloom Filters] --> T[Negative Lookup Optimization]
+    end
+    
+    subgraph "Background Services"
+        U[Compaction Worker] --> V[Level-based Compaction]
+        W[Space Reclaim] --> X[Value Log Cleanup]
+        Y[WAL Sync] --> Z[Durability Guarantee]
+    end
+    
+    subgraph "Persistent Storage"
+        AA[Manifest File] --> BB[SSTable Metadata]
+        CC[WAL Files] --> DD[Write-Ahead Log]
+        EE[Data Files] --> FF[SSTables + VLog]
+    end
+    
+    subgraph "Cross-Cutting Concerns"
+        GG[Compression] --> HH[Zlib Support]
+        II[Encryption] --> JJ[AES-256 Encryption]
+        KK[Memory Management] --> LL[Arena Allocator]
+        MM[Error Handling] --> NN[Context & Recovery]
+    end
+    
+    A --> G
+    G --> M
+    M --> U
+    U --> AA
+    
+    B --> O
+    O --> W
+    W --> CC
+    
+    C --> I
+    I --> Q
+    Q --> V
+    V --> EE
+    
+    GG --> M
+    GG --> Q
+    II --> EE
+    KK --> M
+    MM --> A
 ```
 
 ## Core Components
@@ -61,9 +87,9 @@ Wombat is a high-performance LSM-Tree (Log-Structured Merge-Tree) key-value data
 
 #### Value Log (VLog)
 - **Purpose**: Separate storage for large values
-- **Format**: Append-only log with garbage collection
+- **Format**: Append-only log with space reclaim
 - **Benefits**: Reduces write amplification for large values
-- **Garbage Collection**: Background process for space reclamation
+- **Space Reclaim**: Background process for space reclamation
 
 #### SSTable Hierarchy (L0-L6)
 - **L0**: Unsorted files from MemTable flushes
@@ -159,7 +185,7 @@ Wombat is a high-performance LSM-Tree (Log-Structured Merge-Tree) key-value data
 
 ### Space Efficiency
 - **Compression**: Configurable compression algorithms
-- **Garbage Collection**: Automated space reclamation
+- **Space Reclaimer**: Automated space reclamation
 - **Compaction**: Background merge reduces space amplification
 
 ## Configuration Points
