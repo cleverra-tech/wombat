@@ -323,7 +323,7 @@ pub const DB = struct {
         }
 
         // Check SST levels
-        if (try self.levels.get(self.allocator, key)) |value| {
+        if (try self.levels.get(key)) |value| {
             if (value.isDeleted()) {
                 return null;
             }
@@ -352,24 +352,57 @@ pub const DB = struct {
             return DBError.ValueTooLarge;
         }
 
+        // For simplicity, let's implement synchronous writes directly
+        // This bypasses the async channel system for now
+        return self.setSynchronous(key, value);
+    }
+
+    /// Synchronous set operation that writes directly to memtable
+    fn setSynchronous(self: *Self, key: []const u8, value: []const u8) !void {
         const timestamp = try self.oracle.newReadTs();
 
-        const write_req = WriteRequest{
-            .key = key,
+        // Check if we should store in ValueLog
+        const use_vlog = value.len >= self.options.value_threshold;
+
+        var value_struct = ValueStruct{
             .value = value,
             .timestamp = timestamp,
             .meta = 0,
-            .callback = &struct {
-                fn callback(err: ?DBError) void {
-                    _ = err;
-                }
-            }.callback,
         };
 
-        self.write_channel.send(write_req) catch |err| switch (err) {
-            ChannelError.ChannelClosed => return DBError.DatabaseClosed,
-            else => return DBError.IOError,
-        };
+        // Handle ValueLog storage for large values
+        if (use_vlog and value.len > 0) {
+            const entries = [_]Entry{Entry{
+                .key = key,
+                .value = value,
+                .timestamp = timestamp,
+                .meta = 0,
+            }};
+
+            const pointers = try self.value_log.write(&entries);
+            defer self.allocator.free(pointers);
+
+            // TODO: Serialize ValuePointer into value_struct.value
+            value_struct.setExternal();
+        }
+
+        // Write to memtable
+        self.memtable_mutex.lock();
+        defer self.memtable_mutex.unlock();
+
+        try self.memtable.put(key, value_struct);
+
+        // Update statistics
+        if (value.len == 0) {
+            self.updateStats(.deletes_total, 1);
+        } else {
+            self.updateStats(.puts_total, 1);
+        }
+
+        // Check if memtable is full and rotate if needed
+        if (self.memtable.isFull()) {
+            try self.rotateMemTable();
+        }
     }
 
     /// Delete a key with tombstone marking
@@ -382,24 +415,32 @@ pub const DB = struct {
             return DBError.InvalidKey;
         }
 
+        return self.deleteSynchronous(key);
+    }
+
+    /// Synchronous delete operation that writes directly to memtable
+    fn deleteSynchronous(self: *Self, key: []const u8) !void {
         const timestamp = try self.oracle.newReadTs();
 
-        const write_req = WriteRequest{
-            .key = key,
+        const value_struct = ValueStruct{
             .value = &[_]u8{},
             .timestamp = timestamp,
             .meta = ValueStruct.DELETED_FLAG | ValueStruct.TOMBSTONE_FLAG,
-            .callback = &struct {
-                fn callback(err: ?DBError) void {
-                    _ = err;
-                }
-            }.callback,
         };
 
-        self.write_channel.send(write_req) catch |err| switch (err) {
-            ChannelError.ChannelClosed => return DBError.DatabaseClosed,
-            else => return DBError.IOError,
-        };
+        // Write to memtable
+        self.memtable_mutex.lock();
+        defer self.memtable_mutex.unlock();
+
+        try self.memtable.put(key, value_struct);
+
+        // Update statistics
+        self.updateStats(.deletes_total, 1);
+
+        // Check if memtable is full and rotate if needed
+        if (self.memtable.isFull()) {
+            try self.rotateMemTable();
+        }
     }
 
     pub fn sync(self: *Self) !void {
@@ -717,11 +758,7 @@ pub const DB = struct {
                 const level_u32 = @as(u32, @intCast(level));
 
                 if (self.levels.needsCompaction()) {
-                    self.levels.compactLevel(level_u32) catch |err| {
-                        // Log error but continue
-                        _ = err;
-                        continue;
-                    };
+                    self.levels.compactLevel(level_u32) catch continue;
 
                     compacted = true;
                     self.updateStats(.compactions_total, 1);
@@ -732,8 +769,8 @@ pub const DB = struct {
             }
 
             // Sleep longer if no compaction was needed
-            const sleep_time = if (compacted) 10000000 else 100000000; // 10ms vs 100ms
-            std.time.sleep(sleep_time);
+            const sleep_time: u64 = if (compacted) 10000000 else 100000000; // 10ms vs 100ms
+            std.Thread.sleep(sleep_time);
         }
     }
 
@@ -744,16 +781,13 @@ pub const DB = struct {
             const gc_threshold = 0.7; // Run GC when 70% full
 
             if (self.value_log.shouldRunGC(gc_threshold)) {
-                self.value_log.runGC(0.5) catch |err| {
-                    // Log error but continue
-                    _ = err;
-                };
+                _ = self.value_log.runGC(0.5) catch false;
 
                 self.updateStats(.vlog_gc_runs, 1);
             }
 
             // Sleep for 30 seconds between GC checks
-            std.time.sleep(30000000000);
+            std.Thread.sleep(30000000000);
         }
     }
 };

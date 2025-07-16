@@ -21,13 +21,13 @@ pub const Entry = struct {
 
         var offset: usize = 0;
 
-        std.mem.writeInt(u32, buf[offset .. offset + 4], @intCast(self.key.len), .little);
+        std.mem.writeInt(u32, buf[offset..][0..4], @intCast(self.key.len), .little);
         offset += 4;
 
-        std.mem.writeInt(u32, buf[offset .. offset + 4], @intCast(self.value.len), .little);
+        std.mem.writeInt(u32, buf[offset..][0..4], @intCast(self.value.len), .little);
         offset += 4;
 
-        std.mem.writeInt(u64, buf[offset .. offset + 8], self.timestamp, .little);
+        std.mem.writeInt(u64, buf[offset..][0..8], self.timestamp, .little);
         offset += 8;
 
         buf[offset] = self.meta;

@@ -156,10 +156,11 @@ pub const SkipList = struct {
         fn compareAndSwapValue(self: *Node, expected: ValueStruct, new_value: ValueStruct) bool {
             self.value_mutex.lock();
             defer self.value_mutex.unlock();
-            
-            if (std.mem.eql(u8, self.value.value, expected.value) and 
-                self.value.timestamp == expected.timestamp and 
-                self.value.meta == expected.meta) {
+
+            if (std.mem.eql(u8, self.value.value, expected.value) and
+                self.value.timestamp == expected.timestamp and
+                self.value.meta == expected.meta)
+            {
                 self.value = new_value;
                 return true;
             }
@@ -254,21 +255,21 @@ pub const SkipList = struct {
         while (height < MAX_HEIGHT and self.rng.float(f32) < PROBABILITY) {
             height += 1;
         }
-        
+
         // Update statistics
         if (self.config.enable_statistics) {
             self.updateMaxHeight(height);
         }
-        
+
         return height;
     }
 
     fn updateMaxHeight(self: *Self, height: u16) void {
         if (!self.config.enable_statistics) return;
-        
+
         self.stats_mutex.lock();
         defer self.stats_mutex.unlock();
-        
+
         if (height > self.stats.max_height_reached) {
             self.stats.max_height_reached = @intCast(height);
         }
@@ -280,7 +281,7 @@ pub const SkipList = struct {
             self.stats.gets_total += 1;
             self.stats_mutex.unlock();
         }
-        
+
         return self.findNode(key, prev);
     }
 
@@ -310,12 +311,12 @@ pub const SkipList = struct {
                 current = next.?;
                 if (cmp == .eq and !current.isDeleted()) {
                     prev[level] = current;
-                    
+
                     // Update search statistics
                     if (self.config.enable_statistics) {
                         self.updateSearchStats(search_steps);
                     }
-                    
+
                     return current;
                 }
             }
@@ -333,10 +334,10 @@ pub const SkipList = struct {
 
     fn updateSearchStats(self: *Self, steps: u64) void {
         if (!self.config.enable_statistics) return;
-        
+
         self.stats_mutex.lock();
         defer self.stats_mutex.unlock();
-        
+
         self.stats.search_steps_total += steps;
     }
 
@@ -359,7 +360,7 @@ pub const SkipList = struct {
         // Retry loop for lock-free insertion
         var retry_count: u32 = 0;
         const max_retries = 10;
-        
+
         while (retry_count < max_retries) {
             var prev: [MAX_HEIGHT]?*Node = [_]?*Node{null} ** MAX_HEIGHT;
 
@@ -384,7 +385,7 @@ pub const SkipList = struct {
                 .err => |err| return err,
             }
         }
-        
+
         return SkipListError.Corrupted; // Too many retries
     }
 
@@ -398,20 +399,20 @@ pub const SkipList = struct {
         // For atomic updates, we need to ensure the new value has a higher timestamp
         var retry_count: u32 = 0;
         const max_retries = 5;
-        
+
         while (retry_count < max_retries) {
             const current_value = node.loadValue();
-            
+
             // Skip if current value is newer (based on timestamp)
             if (current_value.timestamp >= new_value.timestamp) {
                 return; // Current value is newer or equal, no update needed
             }
-            
+
             // Try to update atomically
             if (node.compareAndSwapValue(current_value, new_value)) {
                 return; // Successfully updated
             }
-            
+
             retry_count += 1;
             if (self.config.enable_statistics) {
                 self.stats_mutex.lock();
@@ -419,7 +420,7 @@ pub const SkipList = struct {
                 self.stats_mutex.unlock();
             }
         }
-        
+
         return SkipListError.Corrupted; // Too many CAS failures
     }
 
@@ -477,12 +478,12 @@ pub const SkipList = struct {
 
         if (self.findNodeWithStats(key, &prev)) |node| {
             const value = node.loadValue();
-            
+
             // Don't return deleted values
             if (value.isDeleted() or node.isDeleted()) {
                 return null;
             }
-            
+
             return value;
         }
 
@@ -510,35 +511,35 @@ pub const SkipList = struct {
     fn markNodeDeleted(self: *Self, node: *Node) SkipListError!bool {
         var retry_count: u32 = 0;
         const max_retries = 5;
-        
+
         while (retry_count < max_retries) {
             var current_value = node.loadValue();
-            
+
             // Already deleted
             if (current_value.isDeleted() or node.isDeleted()) {
                 return true;
             }
-            
+
             // Create tombstone value
             var tombstone_value = current_value;
             tombstone_value.setDeleted();
             tombstone_value.setTombstone();
-            
+
             // Try to update atomically
             if (node.compareAndSwapValue(current_value, tombstone_value)) {
                 // Mark node as logically deleted
                 node.markDeleted();
-                
+
                 // Update statistics
                 if (self.config.enable_statistics) {
                     self.stats_mutex.lock();
                     self.stats.entries_count = if (self.stats.entries_count > 0) self.stats.entries_count - 1 else 0;
                     self.stats_mutex.unlock();
                 }
-                
+
                 return true;
             }
-            
+
             retry_count += 1;
             if (self.config.enable_statistics) {
                 self.stats_mutex.lock();
@@ -546,7 +547,7 @@ pub const SkipList = struct {
                 self.stats_mutex.unlock();
             }
         }
-        
+
         return SkipListError.Corrupted; // Too many CAS failures
     }
 
@@ -561,14 +562,14 @@ pub const SkipList = struct {
     /// Reset statistics
     pub fn resetStats(self: *Self) void {
         if (!self.config.enable_statistics) return;
-        
+
         self.stats_mutex.lock();
         defer self.stats_mutex.unlock();
-        
+
         const entries_count = self.stats.entries_count;
         const memory_used = self.stats.memory_used;
         const max_height = self.stats.max_height_reached;
-        
+
         self.stats = SkipListStats{
             .entries_count = entries_count, // Keep entry count
             .memory_used = memory_used, // Keep memory usage
@@ -585,16 +586,16 @@ pub const SkipList = struct {
     /// Validate the skiplist structure (expensive operation)
     pub fn validate(self: *Self) SkipListError!void {
         if (!self.config.enable_validation) return;
-        
+
         // Check that levels are properly linked
         var level: usize = 0;
         while (level < self.height.load(.acquire)) {
             var current = self.head;
             var prev_key: ?[]const u8 = null;
-            
+
             while (current.tower[level].load(.acquire)) |next| {
                 current = next;
-                
+
                 // Check ordering
                 if (prev_key) |prev| {
                     if (std.mem.order(u8, prev, current.key) != .lt) {
@@ -603,7 +604,7 @@ pub const SkipList = struct {
                 }
                 prev_key = current.key;
             }
-            
+
             level += 1;
         }
     }
@@ -630,7 +631,12 @@ pub const SkipListIterator = struct {
         };
     }
 
-    pub fn next(self: *Self) ?struct { key: []const u8, value: ValueStruct } {
+    pub const Entry = struct {
+        key: []const u8,
+        value: ValueStruct,
+    };
+
+    pub fn next(self: *Self) ?Entry {
         // Update statistics
         if (self.skiplist.config.enable_statistics) {
             self.skiplist.stats_mutex.lock();
@@ -640,14 +646,14 @@ pub const SkipListIterator = struct {
 
         while (self.current) |node| {
             const value = node.loadValue();
-            
+
             // Skip deleted nodes and move to next
             if (value.isDeleted() or node.isDeleted()) {
                 self.current = node.tower[0].load(.acquire);
                 continue;
             }
-            
-            const result = .{
+
+            const result = Entry{
                 .key = node.key,
                 .value = value,
             };

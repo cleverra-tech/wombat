@@ -62,7 +62,7 @@ pub const MmapFile = struct {
 
     pub fn sync(self: *Self) !void {
         if (self.data.len > 0 and !self.read_only) {
-            try posix.msync(self.data, posix.MSF.SYNC);
+            try posix.msync(@alignCast(self.data), posix.MSF.SYNC);
         }
     }
 

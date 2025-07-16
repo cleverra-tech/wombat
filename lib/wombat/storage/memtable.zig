@@ -1,5 +1,6 @@
 const std = @import("std");
 const SkipList = @import("../core/skiplist.zig").SkipList;
+const SkipListIterator = @import("../core/skiplist.zig").SkipListIterator;
 const ValueStruct = @import("../core/skiplist.zig").ValueStruct;
 const WriteAheadLog = @import("wal.zig").WriteAheadLog;
 const Entry = @import("wal.zig").Entry;
@@ -104,7 +105,7 @@ pub const MemTable = struct {
         try self.wal.sync();
     }
 
-    pub fn iterator(self: *Self) SkipList.SkipListIterator {
+    pub fn iterator(self: *Self) SkipListIterator {
         return self.skiplist.iterator();
     }
 

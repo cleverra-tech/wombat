@@ -83,7 +83,12 @@ pub const Options = struct {
 
         var size = self.base_table_size;
         for (0..level) |_| {
-            size *= self.level_size_multiplier;
+            // Use checked multiplication to avoid overflow
+            const new_size = std.math.mul(usize, size, self.level_size_multiplier) catch {
+                // Return a very large value to indicate max size
+                return std.math.maxInt(usize);
+            };
+            size = new_size;
         }
         return size;
     }
