@@ -26,7 +26,7 @@ pub const LevelHandler = struct {
 
     pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
         for (self.tables.items) |table| {
-            table.close(allocator);
+            table.close();
             allocator.destroy(table);
         }
         self.tables.deinit();
