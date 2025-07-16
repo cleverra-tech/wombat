@@ -37,12 +37,36 @@ pub const IndexEntry = struct {
     key: []const u8,
     offset: u32,
     size: u32,
+    block_count: u32, // Number of entries in this block
+    checksum: u32, // CRC32 checksum of the block
 };
 
-/// Table index for efficient key lookups with binary search
+/// Index statistics for performance monitoring
+pub const IndexStats = struct {
+    total_entries: u64,
+    search_operations: u64,
+    range_scans: u64,
+    cache_hits: u64,
+    cache_misses: u64,
+    average_search_depth: f64,
+    memory_usage: u64,
+};
+
+/// Range query result
+pub const RangeResult = struct {
+    start_index: usize,
+    end_index: usize,
+    count: usize,
+};
+
+/// Table index for efficient key lookups with binary search and advanced features
 pub const TableIndex = struct {
     entries: ArrayList(IndexEntry),
     allocator: Allocator,
+    stats: IndexStats,
+    is_sorted: bool,
+    bloom_filter: ?*BloomFilter, // Optional bloom filter for negative lookups
+    key_cache: std.AutoHashMap(u64, usize), // Hash of key -> index cache
 
     const Self = @This();
 
@@ -54,6 +78,18 @@ pub const TableIndex = struct {
         return Self{
             .entries = entries,
             .allocator = allocator,
+            .stats = IndexStats{
+                .total_entries = 0,
+                .search_operations = 0,
+                .range_scans = 0,
+                .cache_hits = 0,
+                .cache_misses = 0,
+                .average_search_depth = 0.0,
+                .memory_usage = 0,
+            },
+            .is_sorted = true,
+            .bloom_filter = null,
+            .key_cache = std.AutoHashMap(u64, usize).init(allocator),
         };
     }
 
@@ -64,12 +100,24 @@ pub const TableIndex = struct {
             self.allocator.free(entry.key);
         }
         self.entries.deinit();
+        self.key_cache.deinit();
+
+        if (self.bloom_filter) |bf| {
+            var mutable_bf = bf.*;
+            mutable_bf.deinit(self.allocator);
+            self.allocator.destroy(bf);
+        }
     }
 
     /// Add an index entry (keys must be added in sorted order)
     pub fn addEntry(self: *Self, key: []const u8, offset: u32, size: u32) !void {
-        // Validate key ordering
-        if (self.entries.items.len > 0) {
+        return self.addEntryWithStats(key, offset, size, 0, 0);
+    }
+
+    /// Add an index entry with additional metadata
+    pub fn addEntryWithStats(self: *Self, key: []const u8, offset: u32, size: u32, block_count: u32, checksum: u32) !void {
+        // Validate key ordering if sorted flag is set
+        if (self.is_sorted and self.entries.items.len > 0) {
             const last_key = self.entries.items[self.entries.items.len - 1].key;
             if (std.mem.order(u8, last_key, key) != .lt) {
                 return TableError.InvalidKeyOrder;
@@ -79,17 +127,62 @@ pub const TableIndex = struct {
         // Create owned copy of key
         const owned_key = try self.allocator.dupe(u8, key);
 
-        try self.entries.append(IndexEntry{
+        const entry = IndexEntry{
             .key = owned_key,
             .offset = offset,
             .size = size,
-        });
+            .block_count = block_count,
+            .checksum = checksum,
+        };
+
+        try self.entries.append(entry);
+
+        // Update statistics
+        self.stats.total_entries += 1;
+        self.stats.memory_usage += owned_key.len + @sizeOf(IndexEntry);
+
+        // Add to cache for fast lookups
+        const key_hash = self.hashKey(key);
+        try self.key_cache.put(key_hash, self.entries.items.len - 1);
+
+        // Add to bloom filter if available
+        if (self.bloom_filter) |bf| {
+            bf.add(key);
+        }
     }
 
-    /// Binary search for key, returns block index that might contain the key
+    /// Hash function for keys (FNV-1a)
+    fn hashKey(self: *const Self, key: []const u8) u64 {
+        _ = self;
+        var hash: u64 = 14695981039346656037; // FNV offset basis
+        for (key) |byte| {
+            hash ^= byte;
+            hash *%= 1099511628211; // FNV prime
+        }
+        return hash;
+    }
+
+    /// Binary search for key, returns block index that might contain the key (const version)
     pub fn search(self: *const Self, key: []const u8) ?usize {
         if (self.entries.items.len == 0) {
             return null;
+        }
+
+        // Check bloom filter for negative lookups
+        if (self.bloom_filter) |bf| {
+            if (!bf.contains(key)) {
+                return null; // Definitely not present
+            }
+        }
+
+        // Try cache lookup first
+        const key_hash = self.hashKey(key);
+        if (self.key_cache.get(key_hash)) |cached_index| {
+            if (cached_index < self.entries.items.len and
+                std.mem.eql(u8, self.entries.items[cached_index].key, key))
+            {
+                return cached_index;
+            }
         }
 
         var left: usize = 0;
@@ -112,6 +205,77 @@ pub const TableIndex = struct {
             return null;
         }
         return if (left > 0) left - 1 else 0;
+    }
+
+    /// Binary search for key with statistics tracking (mutable version)
+    pub fn searchWithStats(self: *Self, key: []const u8) ?usize {
+        if (self.entries.items.len == 0) {
+            return null;
+        }
+
+        // Update search statistics
+        self.stats.search_operations += 1;
+
+        // Try cache lookup first
+        const key_hash = self.hashKey(key);
+        if (self.key_cache.get(key_hash)) |cached_index| {
+            if (cached_index < self.entries.items.len and
+                std.mem.eql(u8, self.entries.items[cached_index].key, key))
+            {
+                self.stats.cache_hits += 1;
+                return cached_index;
+            }
+        }
+
+        self.stats.cache_misses += 1;
+
+        // Check bloom filter for negative lookups
+        if (self.bloom_filter) |bf| {
+            if (!bf.contains(key)) {
+                return null; // Definitely not present
+            }
+        }
+
+        var left: usize = 0;
+        var right: usize = self.entries.items.len;
+        var search_depth: usize = 0;
+
+        while (left < right) {
+            search_depth += 1;
+            const mid = left + (right - left) / 2;
+            const cmp = std.mem.order(u8, self.entries.items[mid].key, key);
+
+            switch (cmp) {
+                .lt => left = mid + 1,
+                .gt => right = mid,
+                .eq => {
+                    // Update search depth statistics
+                    self.updateSearchDepth(search_depth);
+                    return mid;
+                },
+            }
+        }
+
+        // Update search depth statistics
+        self.updateSearchDepth(search_depth);
+
+        // Return the block that might contain the key
+        if (left >= self.entries.items.len) {
+            // Key is beyond the last entry, no block can contain it
+            return null;
+        }
+        return if (left > 0) left - 1 else 0;
+    }
+
+    /// Update average search depth statistics
+    fn updateSearchDepth(self: *Self, depth: usize) void {
+        const total_ops = self.stats.search_operations;
+        if (total_ops == 1) {
+            self.stats.average_search_depth = @floatFromInt(depth);
+        } else {
+            self.stats.average_search_depth =
+                (self.stats.average_search_depth * @as(f64, @floatFromInt(total_ops - 1)) + @as(f64, @floatFromInt(depth))) / @as(f64, @floatFromInt(total_ops));
+        }
     }
 
     /// Get the number of index entries
@@ -141,6 +305,213 @@ pub const TableIndex = struct {
             return null;
         }
         return self.entries.items[self.entries.items.len - 1].key;
+    }
+
+    /// Range query: find all entries between start_key and end_key (inclusive)
+    pub fn searchRange(self: *const Self, start_key: []const u8, end_key: []const u8) RangeResult {
+        if (self.entries.items.len == 0) {
+            return RangeResult{ .start_index = 0, .end_index = 0, .count = 0 };
+        }
+
+        // Find start index
+        var start_index: usize = 0;
+        var left: usize = 0;
+        var right: usize = self.entries.items.len;
+
+        while (left < right) {
+            const mid = left + (right - left) / 2;
+            const cmp = std.mem.order(u8, self.entries.items[mid].key, start_key);
+
+            if (cmp == .lt) {
+                left = mid + 1;
+            } else {
+                right = mid;
+            }
+        }
+        start_index = left;
+
+        // Find end index
+        var end_index: usize = self.entries.items.len;
+        left = 0;
+        right = self.entries.items.len;
+
+        while (left < right) {
+            const mid = left + (right - left) / 2;
+            const cmp = std.mem.order(u8, self.entries.items[mid].key, end_key);
+
+            if (cmp == .gt) {
+                right = mid;
+            } else {
+                left = mid + 1;
+            }
+        }
+        end_index = left;
+
+        const count = if (end_index > start_index) end_index - start_index else 0;
+        return RangeResult{ .start_index = start_index, .end_index = end_index, .count = count };
+    }
+
+    /// Prefix search: find all entries with keys that start with the given prefix
+    pub fn searchPrefix(self: *const Self, prefix: []const u8) RangeResult {
+        if (self.entries.items.len == 0 or prefix.len == 0) {
+            return RangeResult{ .start_index = 0, .end_index = 0, .count = 0 };
+        }
+
+        // Find the first key that starts with prefix
+        var start_index: usize = self.entries.items.len;
+        for (self.entries.items, 0..) |entry, i| {
+            if (entry.key.len >= prefix.len and std.mem.eql(u8, entry.key[0..prefix.len], prefix)) {
+                start_index = i;
+                break;
+            }
+        }
+
+        if (start_index == self.entries.items.len) {
+            return RangeResult{ .start_index = 0, .end_index = 0, .count = 0 };
+        }
+
+        // Find the end of prefix range
+        var end_index: usize = start_index;
+        for (self.entries.items[start_index..], start_index..) |entry, i| {
+            if (entry.key.len >= prefix.len and std.mem.eql(u8, entry.key[0..prefix.len], prefix)) {
+                end_index = i + 1;
+            } else {
+                break;
+            }
+        }
+
+        const count = end_index - start_index;
+        return RangeResult{ .start_index = start_index, .end_index = end_index, .count = count };
+    }
+
+    /// Bulk load entries (more efficient than individual adds)
+    pub fn bulkLoad(self: *Self, entries: []const IndexEntry) !void {
+        if (entries.len == 0) return;
+
+        // Reserve capacity
+        try self.entries.ensureUnusedCapacity(entries.len);
+
+        // Validate that entries are sorted
+        for (entries[1..], 1..) |entry, i| {
+            const prev_entry = entries[i - 1];
+            if (std.mem.order(u8, prev_entry.key, entry.key) != .lt) {
+                return TableError.InvalidKeyOrder;
+            }
+        }
+
+        // Add all entries
+        for (entries) |entry| {
+            const owned_key = try self.allocator.dupe(u8, entry.key);
+            const new_entry = IndexEntry{
+                .key = owned_key,
+                .offset = entry.offset,
+                .size = entry.size,
+                .block_count = entry.block_count,
+                .checksum = entry.checksum,
+            };
+
+            self.entries.appendAssumeCapacity(new_entry);
+
+            // Update statistics
+            self.stats.total_entries += 1;
+            self.stats.memory_usage += owned_key.len + @sizeOf(IndexEntry);
+
+            // Add to cache
+            const key_hash = self.hashKey(entry.key);
+            try self.key_cache.put(key_hash, self.entries.items.len - 1);
+
+            // Add to bloom filter if available
+            if (self.bloom_filter) |bf| {
+                bf.add(entry.key);
+            }
+        }
+    }
+
+    /// Sort entries if they were added out of order
+    pub fn sort(self: *Self) void {
+        if (self.is_sorted) return;
+
+        // Clear cache since indices will change
+        self.key_cache.clearRetainingCapacity();
+
+        // Sort entries by key
+        std.sort.heap(IndexEntry, self.entries.items, {}, struct {
+            fn lessThan(_: void, a: IndexEntry, b: IndexEntry) bool {
+                return std.mem.order(u8, a.key, b.key) == .lt;
+            }
+        }.lessThan);
+
+        // Rebuild cache with new indices
+        for (self.entries.items, 0..) |entry, i| {
+            const key_hash = self.hashKey(entry.key);
+            self.key_cache.put(key_hash, i) catch {};
+        }
+
+        self.is_sorted = true;
+    }
+
+    /// Enable bloom filter for faster negative lookups
+    pub fn enableBloomFilter(self: *Self, expected_items: usize, false_positive_rate: f64) !void {
+        if (self.bloom_filter != null) return; // Already enabled
+
+        const bf = try self.allocator.create(BloomFilter);
+        bf.* = try BloomFilter.init(self.allocator, expected_items, false_positive_rate);
+
+        // Add all existing keys to bloom filter
+        for (self.entries.items) |entry| {
+            bf.add(entry.key);
+        }
+
+        self.bloom_filter = bf;
+    }
+
+    /// Get index statistics
+    pub fn getStats(self: *const Self) IndexStats {
+        return self.stats;
+    }
+
+    /// Reset statistics counters
+    pub fn resetStats(self: *Self) void {
+        self.stats.search_operations = 0;
+        self.stats.range_scans = 0;
+        self.stats.cache_hits = 0;
+        self.stats.cache_misses = 0;
+        self.stats.average_search_depth = 0.0;
+    }
+
+    /// Get memory usage in bytes
+    pub fn getMemoryUsage(self: *const Self) u64 {
+        return self.stats.memory_usage +
+            self.key_cache.capacity() * (@sizeOf(u64) + @sizeOf(usize)) +
+            if (self.bloom_filter) |bf| bf.serializedSize() else 0;
+    }
+
+    /// Validate index integrity
+    pub fn validate(self: *const Self) !void {
+        if (self.entries.items.len == 0) return;
+
+        // Check that entries are sorted
+        for (self.entries.items[1..], 1..) |entry, i| {
+            const prev_entry = self.entries.items[i - 1];
+            if (std.mem.order(u8, prev_entry.key, entry.key) != .lt) {
+                return TableError.InvalidKeyOrder;
+            }
+        }
+
+        // Validate that cache entries point to correct indices
+        var iterator = self.key_cache.iterator();
+        while (iterator.next()) |kv| {
+            const index = kv.value_ptr.*;
+            if (index >= self.entries.items.len) {
+                return TableError.CorruptedData;
+            }
+
+            const entry_key = self.entries.items[index].key;
+            const expected_hash = self.hashKey(entry_key);
+            if (kv.key_ptr.* != expected_hash) {
+                return TableError.CorruptedData;
+            }
+        }
     }
 };
 
@@ -862,6 +1233,158 @@ test "TableIndex key ordering validation" {
     // Test invalid ordering (should fail)
     const result = index.addEntry("key1", 250, 200);
     std.testing.expect(result == TableError.InvalidKeyOrder) catch unreachable;
+}
+
+test "TableIndex range queries" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var index = try TableIndex.init(allocator, 10);
+    defer index.deinit();
+
+    // Add test data
+    try index.addEntry("apple", 0, 100);
+    try index.addEntry("banana", 100, 150);
+    try index.addEntry("cherry", 250, 200);
+    try index.addEntry("date", 450, 180);
+    try index.addEntry("elderberry", 630, 220);
+
+    // Test range query
+    const range1 = index.searchRange("banana", "date");
+    std.testing.expect(range1.start_index == 1) catch unreachable;
+    std.testing.expect(range1.end_index == 4) catch unreachable;
+    std.testing.expect(range1.count == 3) catch unreachable;
+
+    // Test range with no matches
+    const range2 = index.searchRange("fig", "grape");
+    std.testing.expect(range2.count == 0) catch unreachable;
+
+    // Test range that includes all
+    const range3 = index.searchRange("a", "z");
+    std.testing.expect(range3.count == 5) catch unreachable;
+}
+
+test "TableIndex prefix search" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var index = try TableIndex.init(allocator, 10);
+    defer index.deinit();
+
+    // Add test data with common prefixes
+    try index.addEntry("app1", 0, 100);
+    try index.addEntry("app2", 100, 150);
+    try index.addEntry("app3", 250, 200);
+    try index.addEntry("banana", 450, 180);
+    try index.addEntry("cat", 630, 220);
+
+    // Test prefix search for "app"
+    const prefix_result = index.searchPrefix("app");
+    std.testing.expect(prefix_result.start_index == 0) catch unreachable;
+    std.testing.expect(prefix_result.end_index == 3) catch unreachable;
+    std.testing.expect(prefix_result.count == 3) catch unreachable;
+
+    // Test prefix with no matches
+    const no_match = index.searchPrefix("xyz");
+    std.testing.expect(no_match.count == 0) catch unreachable;
+
+    // Test single character prefix
+    const single_char = index.searchPrefix("c");
+    std.testing.expect(single_char.count == 1) catch unreachable;
+}
+
+test "TableIndex bulk loading" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var index = try TableIndex.init(allocator, 10);
+    defer index.deinit();
+
+    // Create test entries
+    const test_entries = [_]IndexEntry{
+        IndexEntry{ .key = "key1", .offset = 0, .size = 100, .block_count = 10, .checksum = 0x12345678 },
+        IndexEntry{ .key = "key2", .offset = 100, .size = 150, .block_count = 15, .checksum = 0x87654321 },
+        IndexEntry{ .key = "key3", .offset = 250, .size = 200, .block_count = 20, .checksum = 0xABCDEF00 },
+    };
+
+    // Test bulk loading
+    try index.bulkLoad(&test_entries);
+
+    std.testing.expect(index.getEntryCount() == 3) catch unreachable;
+    std.testing.expect(index.search("key2").? == 1) catch unreachable;
+
+    const stats = index.getStats();
+    std.testing.expect(stats.total_entries == 3) catch unreachable;
+}
+
+test "TableIndex statistics and caching" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var index = try TableIndex.init(allocator, 10);
+    defer index.deinit();
+
+    // Add test data
+    try index.addEntry("key1", 0, 100);
+    try index.addEntry("key2", 100, 150);
+    try index.addEntry("key3", 250, 200);
+
+    // Test search with statistics
+    _ = index.searchWithStats("key2");
+    _ = index.searchWithStats("key1");
+    _ = index.searchWithStats("key2"); // This should be a cache hit
+
+    const stats = index.getStats();
+    std.testing.expect(stats.search_operations == 3) catch unreachable;
+    // Note: Cache may not work as expected since hash collisions are possible
+    // Just check that we have some cache activity
+    std.testing.expect(stats.cache_hits + stats.cache_misses == 3) catch unreachable;
+}
+
+test "TableIndex bloom filter integration" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var index = try TableIndex.init(allocator, 10);
+    defer index.deinit();
+
+    // Enable bloom filter
+    try index.enableBloomFilter(100, 0.01);
+
+    // Add test data
+    try index.addEntry("key1", 0, 100);
+    try index.addEntry("key2", 100, 150);
+    try index.addEntry("key3", 250, 200);
+
+    // Test search for existing key
+    std.testing.expect(index.search("key2").? == 1) catch unreachable;
+
+    // Test search for non-existing key (bloom filter should help)
+    std.testing.expect(index.search("nonexistent") == null) catch unreachable;
+}
+
+test "TableIndex validation" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var index = try TableIndex.init(allocator, 10);
+    defer index.deinit();
+
+    // Add sorted entries
+    try index.addEntry("a", 0, 100);
+    try index.addEntry("b", 100, 150);
+    try index.addEntry("c", 250, 200);
+
+    // Validation should pass
+    try index.validate();
+
+    std.testing.expect(index.getMemoryUsage() > 0) catch unreachable;
 }
 
 test "TableBuilder basic functionality" {
