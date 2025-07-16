@@ -35,6 +35,12 @@ pub const OracleStats = @import("wombat/transaction/oracle.zig").OracleStats;
 pub const WaterMark = @import("wombat/transaction/watermark.zig").WaterMark;
 pub const WaterMarkGroup = @import("wombat/transaction/watermark.zig").WaterMarkGroup;
 pub const WaterMarkSnapshot = @import("wombat/transaction/watermark.zig").WaterMarkSnapshot;
+pub const Txn = @import("wombat/transaction/txn.zig").Txn;
+pub const TxnOptions = @import("wombat/transaction/txn.zig").TxnOptions;
+pub const TxnError = @import("wombat/transaction/txn.zig").TxnError;
+pub const TxnIterator = @import("wombat/transaction/txn.zig").TxnIterator;
+pub const TxnBuilder = @import("wombat/transaction/txn.zig").TxnBuilder;
+pub const TxnManager = @import("wombat/transaction/txn.zig").TxnManager;
 
 // Main database
 pub const DB = @import("wombat/db.zig").DB;
@@ -53,6 +59,7 @@ pub const manifest = @import("wombat/storage/manifest.zig");
 pub const vlog = @import("wombat/storage/vlog.zig");
 pub const oracle = @import("wombat/transaction/oracle.zig");
 pub const watermark = @import("wombat/transaction/watermark.zig");
+pub const txn = @import("wombat/transaction/txn.zig");
 pub const channel = @import("wombat/core/channel.zig");
 pub const db = @import("wombat/db.zig");
 
@@ -143,6 +150,98 @@ test "WaterMark transaction ordering" {
     // Complete commit transaction
     txn_mark.done(100);
     std.testing.expect(txn_mark.getWaterMark() == std.math.maxInt(u64) - 1) catch unreachable;
+}
+
+test "Transaction API MVCC operations" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Initialize Oracle for transaction management
+    var oracle_impl = try Oracle.init(allocator);
+    defer oracle_impl.deinit();
+
+    // Mock DB instance
+    var mock_db: u8 = 0;
+
+    // Test TxnBuilder pattern
+    var builder = TxnBuilder.init();
+    const txn_options = builder.readOnly(false)
+        .maxReadKeys(1000)
+        .maxWriteKeys(100)
+        .detectConflicts(true)
+        .options;
+
+    // Create transaction with custom options
+    const read_ts = try oracle_impl.newReadTs();
+    var transaction = Txn.init(allocator, read_ts, &mock_db, &oracle_impl, txn_options);
+    defer transaction.deinit();
+
+    // Test transaction state
+    std.testing.expect(transaction.isActive()) catch unreachable;
+    std.testing.expect(!transaction.isCommitted()) catch unreachable;
+    std.testing.expect(!transaction.isAborted()) catch unreachable;
+    std.testing.expect(transaction.getReadTs() == read_ts) catch unreachable;
+
+    // Test set operation
+    try transaction.set("key1", "value1");
+    std.testing.expect(transaction.getWriteCount() == 1) catch unreachable;
+    std.testing.expect(transaction.hasWrites()) catch unreachable;
+
+    // Test read-your-writes consistency
+    const read_value = try transaction.get("key1");
+    std.testing.expect(read_value != null) catch unreachable;
+    std.testing.expect(std.mem.eql(u8, read_value.?, "value1")) catch unreachable;
+
+    // Test delete operation
+    try transaction.delete("key2");
+    std.testing.expect(transaction.getWriteCount() == 2) catch unreachable;
+
+    // Test delete read-your-writes
+    const deleted_value = try transaction.get("key2");
+    std.testing.expect(deleted_value == null) catch unreachable;
+
+    // Test size estimate
+    const size = transaction.getSizeEstimate();
+    std.testing.expect(size > 0) catch unreachable;
+
+    // Test discard
+    transaction.discard();
+    std.testing.expect(transaction.isAborted()) catch unreachable;
+    std.testing.expect(!transaction.isActive()) catch unreachable;
+}
+
+test "TxnManager lifecycle" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // Initialize Oracle
+    var oracle_impl = try Oracle.init(allocator);
+    defer oracle_impl.deinit();
+
+    // Initialize TxnManager
+    var txn_manager = TxnManager.init(allocator, &oracle_impl);
+    defer txn_manager.deinit();
+
+    // Mock DB instance
+    var mock_db: u8 = 0;
+
+    // Test creating transactions
+    const txn_opts = TxnOptions{ .read_only = false };
+    const txn1 = try txn_manager.newTransaction(&mock_db, txn_opts);
+    std.testing.expect(txn_manager.getActiveCount() == 1) catch unreachable;
+
+    const txn2 = try txn_manager.newTransaction(&mock_db, txn_opts);
+    std.testing.expect(txn_manager.getActiveCount() == 2) catch unreachable;
+
+    // Test committing transaction
+    try txn_manager.commitTransaction(txn1);
+    std.testing.expect(txn_manager.getActiveCount() == 1) catch unreachable;
+
+    // Test discarding transaction
+    txn_manager.discardTransaction(txn2);
+    std.testing.expect(txn_manager.getActiveCount() == 0) catch unreachable;
 }
 
 fn cleanupVLogTestDir(dir_path: []const u8) void {
