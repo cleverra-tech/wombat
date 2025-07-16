@@ -46,7 +46,7 @@ pub const ErrorContext = struct {
         _ = fmt;
         _ = options;
 
-        try writer.print("ErrorContext{{ operation: '{s}', timestamp: {}", .{ self.operation, self.timestamp });
+        try writer.print("ErrorContext{{ operation: '{s}', timestamp: {any}", .{ self.operation, self.timestamp });
 
         if (self.file_path) |path| {
             try writer.print(", file_path: '{s}'", .{path});
@@ -323,7 +323,7 @@ pub const TxnErrorContext = struct {
         });
 
         if (self.commit_timestamp) |ts| {
-            try writer.print(", commit_ts: {}", .{ts});
+            try writer.print(", commit_ts: {any}", .{ts});
         }
 
         if (self.conflicting_keys.len > 0) {
@@ -653,9 +653,9 @@ pub const ErrorChain = struct {
 
         try writer.print("ErrorChain[\n");
         for (self.errors.items, 0..) |entry, i| {
-            try writer.print("  {}: {} at {}", .{ i, entry.error_name, entry.timestamp });
+            try writer.print("  {any}: {s} at {any}", .{ i, entry.error_name, entry.timestamp });
             if (entry.context) |ctx| {
-                try writer.print(" - {}", .{ctx});
+                try writer.print(" - {any}", .{ctx});
             }
             try writer.print("\n");
         }

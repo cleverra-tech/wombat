@@ -5,6 +5,12 @@ pub const CompressionType = enum {
     zlib,
 };
 
+pub const CompactionStrategy = enum {
+    level,
+    size_tiered,
+    universal,
+};
+
 pub const Options = struct {
     dir: []const u8,
     value_dir: []const u8,
@@ -26,6 +32,7 @@ pub const Options = struct {
     block_size: usize = 4 * 1024,
     bloom_false_positive: f64 = 0.01,
     compression: CompressionType = .zlib,
+    compaction_strategy: CompactionStrategy = .level,
 
     sync_writes: bool = false,
     detect_conflicts: bool = true,

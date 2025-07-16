@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const wombat = @import("../lib/wombat.zig");
+const wombat = @import("wombat");
 
 // Comprehensive crash recovery and persistence test suite
 // Tests database durability, WAL recovery, manifest consistency, and data integrity after crashes

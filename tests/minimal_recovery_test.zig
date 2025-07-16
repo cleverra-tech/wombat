@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const wombat = @import("../lib/wombat.zig");
+const wombat = @import("wombat");
 
 // Minimal recovery test to validate basic functionality
 test "Minimal database functionality" {

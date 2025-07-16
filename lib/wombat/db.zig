@@ -138,7 +138,7 @@ pub const CompactionThrottleConfig = struct {
         }
 
         const base_delay_ms = 10;
-        const priority_factor = if (job_priority > self.priority_boost_threshold) 0.5 else 1.0;
+        const priority_factor: f64 = if (job_priority > self.priority_boost_threshold) 0.5 else 1.0;
         return @intFromFloat(@as(f64, @floatFromInt(base_delay_ms)) * priority_factor);
     }
 };
@@ -294,8 +294,11 @@ pub const DB = struct {
 
             // Enhanced worker management
             .compaction_pool = ArrayList(std.Thread).init(allocator),
-            .compaction_jobs = Channel(CompactionJob).init(allocator, 64),
-            .compaction_picker = CompactionPicker.init(allocator, .level),
+            .compaction_jobs = try Channel(CompactionJob).init(allocator, 64),
+            .compaction_picker = CompactionPicker.init(allocator, &options) catch |err| {
+                std.debug.print("Error initializing CompactionPicker: {any}\n", .{err});
+                return err;
+            },
             .worker_stats = WorkerStats.init(),
             .compaction_throttle = CompactionThrottleConfig.init(),
 
@@ -742,7 +745,7 @@ pub const DB = struct {
 
                     if (attempt < max_retries) {
                         const delay = self.retry_config.calculateDelay(attempt);
-                        std.time.sleep(delay * std.time.ns_per_ms);
+                        std.Thread.sleep(delay * std.time.ns_per_ms);
                         attempt += 1;
                         continue;
                     }
@@ -1254,16 +1257,18 @@ pub const DB = struct {
 
             if (self.value_log.shouldRunSpaceReclamation(reclaim_threshold)) {
                 const start_time = std.time.milliTimestamp();
-                const bytes_reclaimed = self.value_log.runSpaceReclamation(0.5) catch 0;
+                const space_reclaimed = self.value_log.runSpaceReclamation(0.5) catch false;
                 const end_time = std.time.milliTimestamp();
 
                 self.updateStats(.vlog_space_reclaim_runs, 1);
-                _ = self.worker_stats.vlog_space_reclaimed_bytes.fetchAdd(bytes_reclaimed, .acq_rel);
+                if (space_reclaimed) {
+                    _ = self.worker_stats.vlog_space_reclaimed_bytes.fetchAdd(1, .acq_rel);
+                }
 
                 // Log space reclamation performance
                 const duration = @as(u64, @intCast(end_time - start_time));
                 if (duration > 1000) { // Log if reclamation took more than 1 second
-                    std.log.info("VLog space reclamation completed: {} bytes reclaimed in {} ms", .{ bytes_reclaimed, duration });
+                    std.log.info("VLog space reclamation completed: {any} in {any} ms", .{ space_reclaimed, duration });
                 }
             }
 
@@ -1281,7 +1286,7 @@ pub const DB = struct {
                 _ = self.worker_stats.compaction_jobs_queued.fetchAdd(1, .acq_rel);
 
                 // Try to send the job to the worker pool
-                if (self.compaction_jobs.trySend(job)) {
+                if (self.compaction_jobs.trySend(job) catch false) {
                     // Job successfully queued
                     continue;
                 } else {
@@ -1289,18 +1294,19 @@ pub const DB = struct {
                     const active_workers = self.worker_stats.active_compaction_workers.load(.acquire);
                     const pending_jobs = self.compaction_jobs.size();
 
-                    if (self.compaction_throttle.shouldThrottle(active_workers, pending_jobs)) {
+                    if (self.compaction_throttle.shouldThrottle(active_workers, @intCast(pending_jobs))) {
                         // Apply throttling - delay before trying again
                         const delay_ms = self.compaction_throttle.calculateDelay(job.priority);
                         std.Thread.sleep(delay_ms * 1000000); // Convert to nanoseconds
 
                         // Try to send again after delay
-                        if (self.compaction_jobs.trySend(job)) {
+                        if (self.compaction_jobs.trySend(job) catch false) {
                             continue;
                         } else {
                             // Still can't send, record failure and cleanup
                             self.worker_stats.recordFailedCompaction();
-                            job.deinit(self.allocator);
+                            var mutable_job = job;
+                            mutable_job.deinit(self.allocator);
                         }
                     } else {
                         // Execute job directly in coordinator thread as fallback
@@ -1359,7 +1365,8 @@ pub const DB = struct {
 
     /// Execute a compaction job with enhanced error handling and metrics
     fn executeCompactionJob(self: *Self, job: CompactionJob) void {
-        defer job.deinit(self.allocator);
+        var mutable_job = job;
+        defer mutable_job.deinit(self.allocator);
 
         // Execute the actual compaction through the levels controller
         self.levels.compactLevel(job.level) catch |err| {

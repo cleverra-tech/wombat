@@ -25,9 +25,32 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
+    // Recovery tests
+    const recovery_tests = [_][]const u8{
+        "tests/minimal_recovery_test.zig",
+        "tests/simple_recovery_test.zig",
+        "tests/crash_recovery_test.zig",
+        "tests/simple_comprehensive_test.zig",
+        "tests/comprehensive_test.zig",
+    };
+
+    const recovery_test_step = b.step("test-recovery", "Run recovery tests");
+    for (recovery_tests) |test_file| {
+        const recovery_test = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = .{ .src_path = .{ .owner = b, .sub_path = test_file } },
+                .target = target,
+                .optimize = optimize,
+            }),
+        });
+        recovery_test.root_module.addImport("wombat", wombat_module);
+        recovery_test_step.dependOn(&b.addRunArtifact(recovery_test).step);
+    }
+
     // All tests step
     const all_tests_step = b.step("test-all", "Run all tests");
     all_tests_step.dependOn(test_step);
+    all_tests_step.dependOn(recovery_test_step);
 
     // Documentation
     const docs = b.addInstallDirectory(.{

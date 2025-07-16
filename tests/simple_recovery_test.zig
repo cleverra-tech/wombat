@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const wombat = @import("../lib/wombat.zig");
+const wombat = @import("wombat");
 
 // Simplified crash recovery and persistence test suite
 // Focus on basic data persistence without complex transaction scenarios
