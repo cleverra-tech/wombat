@@ -28,7 +28,7 @@ pub const MmapFile = struct {
             };
         }
 
-        const prot = if (read_only) posix.PROT.READ else posix.PROT.READ | posix.PROT.WRITE;
+        const prot = if (read_only) @as(u32, posix.PROT.READ) else @as(u32, posix.PROT.READ | posix.PROT.WRITE);
         const data = try posix.mmap(null, size, prot, .{ .TYPE = .SHARED }, file.handle, 0);
 
         return Self{
@@ -55,7 +55,7 @@ pub const MmapFile = struct {
 
     pub fn close(self: *Self) void {
         if (self.data.len > 0) {
-            posix.munmap(self.data);
+            posix.munmap(@alignCast(self.data));
         }
         self.file.close();
     }
@@ -72,7 +72,7 @@ pub const MmapFile = struct {
         }
 
         if (self.data.len > 0) {
-            posix.munmap(self.data);
+            posix.munmap(@alignCast(self.data));
         }
 
         try self.file.setEndPos(new_size);

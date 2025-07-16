@@ -21,6 +21,9 @@ pub const TableBuilder = @import("wombat/storage/table.zig").TableBuilder;
 pub const LevelsController = @import("wombat/storage/levels.zig").LevelsController;
 pub const ManifestFile = @import("wombat/storage/manifest.zig").ManifestFile;
 pub const TableInfo = @import("wombat/storage/manifest.zig").TableInfo;
+pub const ValueLog = @import("wombat/storage/vlog.zig").ValueLog;
+pub const ValuePointer = @import("wombat/storage/vlog.zig").ValuePointer;
+pub const VLogFile = @import("wombat/storage/vlog.zig").VLogFile;
 
 // Transaction modules
 pub const Oracle = @import("wombat/transaction/oracle.zig").Oracle;
@@ -40,6 +43,7 @@ pub const bloom = @import("wombat/core/bloom.zig");
 pub const table = @import("wombat/storage/table.zig");
 pub const levels = @import("wombat/storage/levels.zig");
 pub const manifest = @import("wombat/storage/manifest.zig");
+pub const vlog = @import("wombat/storage/vlog.zig");
 pub const oracle = @import("wombat/transaction/oracle.zig");
 pub const channel = @import("wombat/core/channel.zig");
 pub const db = @import("wombat/db.zig");
@@ -76,4 +80,43 @@ test "skiplist basic operations" {
     const retrieved = skiplist_impl.get(key);
     std.testing.expect(retrieved != null) catch unreachable;
     std.testing.expect(std.mem.eql(u8, retrieved.?.value, "test_value")) catch unreachable;
+}
+
+test "ValueLog basic operations" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    const temp_dir = "test_vlog_basic";
+    defer cleanupVLogTestDir(temp_dir);
+
+    const value_log = try ValueLog.init(allocator, temp_dir, 10, 1024 * 1024);
+    defer value_log.deinit();
+
+    // Test basic write/read
+    const entries = [_]Entry{
+        Entry{ .key = "key1", .value = "long_value_for_vlog_storage", .timestamp = 1, .meta = 0 },
+    };
+
+    const pointers = try value_log.write(&entries);
+    defer allocator.free(pointers);
+
+    const read_value = try value_log.read(pointers[0], allocator);
+    defer allocator.free(read_value);
+
+    std.testing.expect(std.mem.eql(u8, read_value, entries[0].value)) catch unreachable;
+}
+
+fn cleanupVLogTestDir(dir_path: []const u8) void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var iterator = dir.iterate();
+    while (iterator.next() catch null) |entry| {
+        if (entry.kind == .file) {
+            var path_buf: [256]u8 = undefined;
+            const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+            std.fs.cwd().deleteFile(path) catch {};
+        }
+    }
+    std.fs.cwd().deleteDir(dir_path) catch {};
 }
