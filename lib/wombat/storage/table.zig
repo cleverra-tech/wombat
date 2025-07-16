@@ -7,6 +7,7 @@ const ValueStruct = @import("../core/skiplist.zig").ValueStruct;
 const SkipList = @import("../core/skiplist.zig").SkipList;
 const Options = @import("../core/options.zig").Options;
 const CompressionType = @import("../core/options.zig").CompressionType;
+const Compressor = @import("../compression/compressor.zig").Compressor;
 
 /// Table errors
 pub const TableError = error{
@@ -717,7 +718,15 @@ pub const Table = struct {
 
         return switch (self.compression) {
             .none => self.allocator.dupe(u8, compressed_data) catch return TableError.OutOfMemory,
-            .snappy, .zstd => return TableError.CompressionNotImplemented,
+            .zlib => blk: {
+                const compressor = Compressor.init(self.allocator, self.compression);
+                const original_size = std.mem.readInt(u32, compressed_data[0..4], .little);
+                const decompressed = compressor.decompressAlloc(compressed_data[4..], original_size) catch |err| switch (err) {
+                    error.OutOfMemory => return TableError.OutOfMemory,
+                    else => return TableError.CorruptedData,
+                };
+                break :blk decompressed;
+            },
         };
     }
 
@@ -1078,9 +1087,31 @@ pub const TableBuilder = struct {
         }
 
         // Compress block data
+        const block_data = self.block_data.toOwnedSlice() catch return TableError.OutOfMemory;
+        defer self.allocator.free(block_data);
+        
         const compressed_block = switch (self.compression) {
-            .none => self.block_data.toOwnedSlice() catch return TableError.OutOfMemory,
-            .snappy, .zstd => return TableError.CompressionNotImplemented,
+            .none => self.allocator.dupe(u8, block_data) catch return TableError.OutOfMemory,
+            .zlib => blk: {
+                const compressor = Compressor.init(self.allocator, self.compression);
+                
+                // Allocate buffer for compressed data + original size header
+                const max_compressed_size = compressor.maxCompressedSize(block_data.len);
+                const compressed_buffer = self.allocator.alloc(u8, max_compressed_size + 4) catch return TableError.OutOfMemory;
+                
+                // Write original size as header
+                std.mem.writeInt(u32, compressed_buffer[0..4], @intCast(block_data.len), .little);
+                
+                // Compress the data
+                const compressed_size = compressor.compress(block_data, compressed_buffer[4..]) catch |err| switch (err) {
+                    error.OutOfMemory => return TableError.OutOfMemory,
+                    else => return TableError.IOError,
+                };
+                
+                // Resize buffer to actual compressed size
+                const final_buffer = self.allocator.realloc(compressed_buffer, compressed_size + 4) catch compressed_buffer[0..compressed_size + 4];
+                break :blk final_buffer;
+            },
         };
         defer self.allocator.free(compressed_block);
 

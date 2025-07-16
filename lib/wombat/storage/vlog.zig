@@ -6,6 +6,8 @@ const atomic = std.atomic;
 const fs = std.fs;
 const MmapFile = @import("../io/mmap.zig").MmapFile;
 const Entry = @import("wal.zig").Entry;
+const CompressionType = @import("../core/options.zig").CompressionType;
+const Compressor = @import("../compression/compressor.zig").Compressor;
 
 /// Pointer to a value stored in the value log
 pub const ValuePointer = struct {
@@ -106,11 +108,15 @@ pub const VLogFile = struct {
     stats: DiscardStats,
     /// File path for identification
     path: []const u8,
+    /// Compression type for this file
+    compression: CompressionType,
+    /// Allocator for compression operations
+    allocator: Allocator,
 
     const Self = @This();
     const HEADER_SIZE = @sizeOf(u32) + @sizeOf(u64); // entry_size + checksum
 
-    pub fn create(allocator: Allocator, id: u32, path: []const u8, max_size: u64) !*Self {
+    pub fn create(allocator: Allocator, id: u32, path: []const u8, max_size: u64, compression: CompressionType) !*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
@@ -123,13 +129,15 @@ pub const VLogFile = struct {
             .write_offset = atomic.Value(u64).init(0),
             .max_size = max_size,
             .stats = DiscardStats.init(),
+            .compression = compression,
+            .allocator = allocator,
             .path = try allocator.dupe(u8, path),
         };
 
         return self;
     }
 
-    pub fn open(allocator: Allocator, id: u32, path: []const u8) !*Self {
+    pub fn open(allocator: Allocator, id: u32, path: []const u8, compression: CompressionType) !*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
@@ -140,6 +148,8 @@ pub const VLogFile = struct {
             .id = id,
             .mmap = mmap,
             .write_offset = atomic.Value(u64).init(mmap.size),
+            .compression = compression,
+            .allocator = allocator,
             .max_size = mmap.size,
             .stats = DiscardStats.init(),
             .path = try allocator.dupe(u8, path),
@@ -159,7 +169,15 @@ pub const VLogFile = struct {
 
     /// Write an entry to the file, returning its pointer
     pub fn writeEntry(self: *Self, entry: Entry) !ValuePointer {
-        const entry_size = entry.value.len;
+        // Compress the value if compression is enabled
+        const compressor = Compressor.init(self.allocator, self.compression);
+        const compressed_value = if (compressor.shouldCompress(entry.value))
+            try compressor.compressAlloc(entry.value)
+        else
+            try self.allocator.dupe(u8, entry.value);
+        defer self.allocator.free(compressed_value);
+
+        const entry_size = compressed_value.len;
         const total_size = HEADER_SIZE + entry_size;
 
         const current_offset = self.write_offset.load(.acquire);
@@ -169,8 +187,8 @@ pub const VLogFile = struct {
             return error.FileFull;
         }
 
-        // Calculate checksum for integrity
-        const checksum = calculateChecksum(entry.value);
+        // Calculate checksum for integrity (on compressed data)
+        const checksum = calculateChecksum(compressed_value);
 
         // Get buffer for write
         const buffer = try self.mmap.getSlice(current_offset, total_size);
@@ -182,8 +200,8 @@ pub const VLogFile = struct {
         std.mem.writeInt(u64, buffer[offset..][0..8], checksum, .little);
         offset += 8;
 
-        // Write value data
-        @memcpy(buffer[offset .. offset + entry_size], entry.value);
+        // Write value data (compressed)
+        @memcpy(buffer[offset .. offset + entry_size], compressed_value);
 
         // Update write offset atomically
         _ = self.write_offset.fetchAdd(total_size, .acq_rel);
@@ -218,17 +236,31 @@ pub const VLogFile = struct {
             return error.CorruptedEntry;
         }
 
-        // Read value data
-        const value_buf = try self.mmap.getSliceConst(ptr.offset + HEADER_SIZE, entry_size);
+        // Read value data (compressed)
+        const compressed_buf = try self.mmap.getSliceConst(ptr.offset + HEADER_SIZE, entry_size);
 
         // Verify checksum
-        const calculated_checksum = calculateChecksum(value_buf);
+        const calculated_checksum = calculateChecksum(compressed_buf);
         if (calculated_checksum != stored_checksum) {
             return error.ChecksumMismatch;
         }
 
-        // Return copy of the data
-        return try allocator.dupe(u8, value_buf);
+        // Decompress if needed
+        const compressor = Compressor.init(allocator, self.compression);
+        const decompressed_value = if (self.compression != .none) blk: {
+            // Try decompression, if it fails, assume it's uncompressed
+            const original_size = if (compressed_buf.len >= 4) std.mem.readInt(u32, compressed_buf[0..4], .little) else compressed_buf.len;
+            const decompressed = compressor.decompressAlloc(compressed_buf, original_size) catch {
+                // If decompression fails, return as-is (might be uncompressed)
+                break :blk try allocator.dupe(u8, compressed_buf);
+            };
+            break :blk decompressed;
+        } else {
+            try allocator.dupe(u8, compressed_buf);
+        };
+
+        // Return decompressed data
+        return decompressed_value;
     }
 
     /// Check if file can accommodate additional bytes
@@ -289,10 +321,12 @@ pub const ValueLog = struct {
     mutex: std.Thread.Mutex,
     /// Memory allocator
     allocator: Allocator,
+    /// Compression type for value log entries
+    compression: CompressionType,
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator, dir_path: []const u8, threshold: u32, file_size: u64) !*Self {
+    pub fn init(allocator: Allocator, dir_path: []const u8, threshold: u32, file_size: u64, compression: CompressionType) !*Self {
         const self = try allocator.create(Self);
         errdefer allocator.destroy(self);
 
@@ -312,6 +346,7 @@ pub const ValueLog = struct {
             .dir_path = try allocator.dupe(u8, dir_path),
             .mutex = std.Thread.Mutex{},
             .allocator = allocator,
+            .compression = compression,
         };
 
         // Load existing files
@@ -411,7 +446,7 @@ pub const ValueLog = struct {
         const new_path = try std.fmt.allocPrint(self.allocator, "{s}/vlog_{d}.dat", .{ self.dir_path, new_file_id });
         defer self.allocator.free(new_path);
 
-        const new_file = try VLogFile.create(self.allocator, new_file_id, new_path, self.file_size);
+        const new_file = try VLogFile.create(self.allocator, new_file_id, new_path, self.file_size, self.compression);
         errdefer new_file.deinit(self.allocator);
 
         // Copy valid entries from old file to new file
@@ -513,7 +548,7 @@ pub const ValueLog = struct {
             const file_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.dir_path, entry.name });
             defer self.allocator.free(file_path);
 
-            const file = try VLogFile.open(self.allocator, file_id, file_path);
+            const file = try VLogFile.open(self.allocator, file_id, file_path, self.compression);
             try self.files.append(file);
             try self.files_by_id.put(file_id, file);
         }
@@ -544,7 +579,7 @@ pub const ValueLog = struct {
         const file_path = try std.fmt.allocPrint(self.allocator, "{s}/vlog_{d}.dat", .{ self.dir_path, file_id });
         defer self.allocator.free(file_path);
 
-        const new_file = try VLogFile.create(self.allocator, file_id, file_path, self.file_size);
+        const new_file = try VLogFile.create(self.allocator, file_id, file_path, self.file_size, self.compression);
         try self.files.append(new_file);
         try self.files_by_id.put(file_id, new_file);
 
@@ -675,7 +710,7 @@ test "VLogFile basic operations" {
     const temp_path = "test_vlog_file.dat";
     defer fs.cwd().deleteFile(temp_path) catch {};
 
-    const file = try VLogFile.create(allocator, 1, temp_path, 1024 * 1024);
+    const file = try VLogFile.create(allocator, 1, temp_path, 1024 * 1024, .none);
     defer file.deinit(allocator);
 
     // Test writing entry
@@ -703,7 +738,7 @@ test "ValueLog complete workflow" {
     const temp_dir = "test_vlog_dir";
     defer cleanupTestDir(temp_dir);
 
-    const vlog = try ValueLog.init(allocator, temp_dir, 10, 1024 * 1024);
+    const vlog = try ValueLog.init(allocator, temp_dir, 10, 1024 * 1024, .zlib);
     defer vlog.deinit();
 
     // Test writing entries

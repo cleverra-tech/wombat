@@ -2,8 +2,7 @@ const std = @import("std");
 
 pub const CompressionType = enum {
     none,
-    snappy,
-    zstd,
+    zlib,
 };
 
 pub const Options = struct {
@@ -26,7 +25,7 @@ pub const Options = struct {
 
     block_size: usize = 4 * 1024,
     bloom_false_positive: f64 = 0.01,
-    compression: CompressionType = .snappy,
+    compression: CompressionType = .zlib,
 
     sync_writes: bool = false,
     detect_conflicts: bool = true,

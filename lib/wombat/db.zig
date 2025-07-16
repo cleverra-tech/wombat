@@ -134,7 +134,7 @@ pub const DB = struct {
         errdefer commit_watermark.deinit();
 
         // Initialize storage components
-        const value_log = try ValueLog.init(allocator, options.value_dir, 10, options.value_log_file_size);
+        const value_log = try ValueLog.init(allocator, options.value_dir, 10, options.value_log_file_size, options.compression);
         errdefer value_log.deinit();
 
         var manifest_path_buf: [512]u8 = undefined;
