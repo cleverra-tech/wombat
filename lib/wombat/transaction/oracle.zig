@@ -266,8 +266,11 @@ pub const Oracle = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        for (self.committed_txns.items) |txn| {
-            self.allocator.free(txn.conflict_keys);
+        for (self.committed_txns.items) |*txn| {
+            if (txn.conflict_keys.len > 0) {
+                self.allocator.free(txn.conflict_keys);
+                txn.conflict_keys = &[_]u64{}; // Clear pointer to prevent double-free
+            }
         }
         self.committed_txns.deinit();
 
@@ -352,13 +355,19 @@ pub const Oracle = struct {
 
         try self.committed_txns.append(committed_txn);
 
-        // Clean up old transactions periodically
-        try self.maybeCleanupOldTxns(txn.commit_ts);
+        // Clean up old transactions periodically (no need to lock again)
+        self.maybeCleanupOldTxnsUnsafe(txn.commit_ts);
     }
 
     /// Clean up old committed transactions that are no longer needed for conflict detection
     fn maybeCleanupOldTxns(self: *Self, current_ts: u64) !void {
-        // Use watermarks to determine safe cleanup threshold
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.maybeCleanupOldTxnsUnsafe(current_ts);
+    }
+
+    /// Clean up old committed transactions without locking (must be called with mutex held)
+    fn maybeCleanupOldTxnsUnsafe(self: *Self, current_ts: u64) void {
         const min_read_ts = self.read_mark.getWaterMark();
         const safe_cleanup_ts = if (min_read_ts == std.math.maxInt(u64) - 1)
             if (current_ts > self.cleanup_threshold) current_ts - self.cleanup_threshold else 0
@@ -371,7 +380,9 @@ pub const Oracle = struct {
             cleaned_count < self.max_committed_txns / 4) // Limit cleanup per run
         {
             const old_txn = self.committed_txns.orderedRemove(0);
-            self.allocator.free(old_txn.conflict_keys);
+            if (old_txn.conflict_keys.len > 0) {
+                self.allocator.free(old_txn.conflict_keys);
+            }
             cleaned_count += 1;
         }
 
@@ -385,7 +396,9 @@ pub const Oracle = struct {
             var force_cleaned: usize = 0;
             while (force_cleaned < excess and self.committed_txns.items.len > 0) {
                 const old_txn = self.committed_txns.orderedRemove(0);
-                self.allocator.free(old_txn.conflict_keys);
+                if (old_txn.conflict_keys.len > 0) {
+                    self.allocator.free(old_txn.conflict_keys);
+                }
                 force_cleaned += 1;
             }
         }
@@ -444,7 +457,7 @@ pub const Oracle = struct {
         defer self.mutex.unlock();
 
         const current_ts = self.next_txn_ts.load(.acquire);
-        try self.maybeCleanupOldTxns(current_ts);
+        self.maybeCleanupOldTxnsUnsafe(current_ts);
     }
 };
 

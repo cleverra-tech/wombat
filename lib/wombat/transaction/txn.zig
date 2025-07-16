@@ -80,6 +80,12 @@ pub const Txn = struct {
 
     /// Clean up transaction resources
     pub fn deinit(self: *Self) void {
+        // Clean up any remaining allocated memory in writes
+        for (self.writes.items) |write| {
+            self.allocator.free(write.key);
+            self.allocator.free(write.value);
+        }
+
         self.reads.deinit();
         self.writes.deinit();
         self.conflict_keys.deinit();
@@ -129,6 +135,14 @@ pub const Txn = struct {
             return TxnError.OutOfMemory;
         }
 
+        // Additional bounds checking to prevent buffer overflow
+        if (key.len > 1024 * 1024) {
+            return TxnError.InvalidOperation;
+        }
+        if (value.len > 1024 * 1024 * 1024) {
+            return TxnError.InvalidOperation;
+        }
+
         const key_hash = std.hash_map.hashString(key);
         self.write_sequence += 1;
 
@@ -164,6 +178,11 @@ pub const Txn = struct {
 
         if (self.writes.items.len >= self.options.max_write_keys) {
             return TxnError.OutOfMemory;
+        }
+
+        // Additional bounds checking to prevent buffer overflow
+        if (key.len > 1024 * 1024) {
+            return TxnError.InvalidOperation;
         }
 
         const key_hash = std.hash_map.hashString(key);
@@ -242,6 +261,14 @@ pub const Txn = struct {
         // Complete watermarks
         self.oracle.completeReadTxn(self.read_ts);
         self.oracle.completeCommitTxn(commit_ts);
+
+        // Clean up allocated keys and values after successful commit
+        for (self.writes.items) |write| {
+            self.allocator.free(write.key);
+            self.allocator.free(write.value);
+        }
+        self.writes.clearAndFree();
+        self.write_cache.clearAndFree();
     }
 
     /// Discard/abort the transaction
@@ -471,11 +498,13 @@ pub const TxnManager = struct {
         while (iter.next()) |entry| {
             if (entry.value_ptr.* == txn) {
                 _ = self.active_txns.remove(entry.key_ptr.*);
-                txn.deinit();
-                self.allocator.destroy(txn);
                 break;
             }
         }
+
+        // Clean up transaction outside of mutex to avoid use-after-free
+        txn.deinit();
+        self.allocator.destroy(txn);
     }
 
     pub fn getActiveCount(self: *Self) usize {

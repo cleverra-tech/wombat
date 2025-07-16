@@ -40,10 +40,12 @@ pub const WaterMark = struct {
     pub fn deinit(self: *Self) void {
         self.mutex.lock();
         self.pending.deinit();
+        const allocator = self.allocator;
+        const name = self.name;
         self.mutex.unlock();
 
-        const allocator = self.allocator;
-        allocator.free(self.name);
+        // Free memory after unlocking mutex to prevent race conditions
+        allocator.free(name);
         allocator.destroy(self);
     }
 
