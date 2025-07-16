@@ -19,6 +19,8 @@ pub const MemTable = @import("wombat/storage/memtable.zig").MemTable;
 pub const Table = @import("wombat/storage/table.zig").Table;
 pub const TableBuilder = @import("wombat/storage/table.zig").TableBuilder;
 pub const LevelsController = @import("wombat/storage/levels.zig").LevelsController;
+pub const ManifestFile = @import("wombat/storage/manifest.zig").ManifestFile;
+pub const TableInfo = @import("wombat/storage/manifest.zig").TableInfo;
 
 // Transaction modules
 pub const Oracle = @import("wombat/transaction/oracle.zig").Oracle;
@@ -37,6 +39,7 @@ pub const memtable = @import("wombat/storage/memtable.zig");
 pub const bloom = @import("wombat/core/bloom.zig");
 pub const table = @import("wombat/storage/table.zig");
 pub const levels = @import("wombat/storage/levels.zig");
+pub const manifest = @import("wombat/storage/manifest.zig");
 pub const oracle = @import("wombat/transaction/oracle.zig");
 pub const channel = @import("wombat/core/channel.zig");
 pub const db = @import("wombat/db.zig");
