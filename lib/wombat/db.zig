@@ -199,7 +199,7 @@ pub const DB = struct {
     compaction_picker: CompactionPicker,
     worker_stats: WorkerStats,
     compaction_throttle: CompactionThrottleConfig,
-    
+
     // Enhanced error handling
     error_metrics: ErrorMetrics,
     retry_config: RetryConfig,
@@ -298,11 +298,11 @@ pub const DB = struct {
             .compaction_picker = CompactionPicker.init(allocator, .level),
             .worker_stats = WorkerStats.init(),
             .compaction_throttle = CompactionThrottleConfig.init(),
-            
+
             // Enhanced error handling
             .error_metrics = ErrorMetrics.init(allocator),
             .retry_config = RetryConfig.init(),
-            
+
             .memtable_mutex = Mutex{},
             .flush_signal = std.Thread.Condition{},
         };
@@ -650,7 +650,7 @@ pub const DB = struct {
 
         // Cleanup enhanced worker management
         self.compaction_picker.deinit();
-        
+
         // Cleanup enhanced error handling
         self.error_metrics.deinit();
 
@@ -660,7 +660,7 @@ pub const DB = struct {
     /// Get a value for the given key with proper MVCC semantics and enhanced error handling
     pub fn get(self: *Self, key: []const u8) !?[]const u8 {
         const context = ErrorContext.init("get").withKey(key);
-        
+
         if (self.close_signal.load(.acquire)) {
             self.error_metrics.recordError(DBError, DBError.DatabaseClosed);
             ErrorSystem.logError(DBError, DBError.DatabaseClosed, context);
@@ -735,24 +735,24 @@ pub const DB = struct {
         const levels_result = blk: {
             var attempt: u32 = 0;
             const max_retries = self.retry_config.max_retries;
-            
+
             while (attempt <= max_retries) {
                 const result = self.levels.get(key) catch |err| {
                     self.error_metrics.recordError(anyerror, err);
-                    
+
                     if (attempt < max_retries) {
                         const delay = self.retry_config.calculateDelay(attempt);
                         std.time.sleep(delay * std.time.ns_per_ms);
                         attempt += 1;
                         continue;
                     }
-                    
+
                     break :blk err;
                 };
-                
+
                 break :blk result;
             }
-            
+
             break :blk error.MaxRetriesExceeded;
         } catch |err| {
             self.error_metrics.recordError(DBError, DBError.IOError);
@@ -763,7 +763,7 @@ pub const DB = struct {
                 else => DBError.IOError,
             };
         };
-        
+
         if (levels_result) |value| {
             if (value.isDeleted()) {
                 return null;
@@ -794,7 +794,7 @@ pub const DB = struct {
     /// Set a key-value pair with enhanced error handling
     pub fn set(self: *Self, key: []const u8, value: []const u8) !void {
         const context = ErrorContext.init("set").withKey(key);
-        
+
         if (self.close_signal.load(.acquire)) {
             self.error_metrics.recordError(DBError, DBError.DatabaseClosed);
             ErrorSystem.logError(DBError, DBError.DatabaseClosed, context);

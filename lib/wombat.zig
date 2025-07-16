@@ -10,6 +10,7 @@ pub const ChannelError = @import("wombat/core/channel.zig").ChannelError;
 pub const ChannelStats = @import("wombat/core/channel.zig").ChannelStats;
 pub const Options = @import("wombat/core/options.zig").Options;
 pub const CompressionType = @import("wombat/core/options.zig").CompressionType;
+pub const Compressor = @import("wombat/compression/compressor.zig").Compressor;
 
 // I/O modules
 pub const MmapFile = @import("wombat/io/mmap.zig").MmapFile;
@@ -114,7 +115,7 @@ test "ValueLog basic operations" {
     const temp_dir = "test_vlog_basic";
     defer cleanupVLogTestDir(temp_dir);
 
-    const value_log = try ValueLog.init(allocator, temp_dir, 10, 1024 * 1024);
+    const value_log = try ValueLog.init(allocator, temp_dir, 10, 1024 * 1024, .zlib);
     defer value_log.deinit();
 
     // Test basic write/read

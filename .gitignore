@@ -1,6 +1,7 @@
 # Zig build artifacts
 zig-cache/
 zig-out/
+*.a
 
 # Test data directories
 test_data/
@@ -12,6 +13,7 @@ wombat_bench_data/
 tmp/
 *.tmp
 *.log
+wombat_test
 
 # IDE files
 .vscode/

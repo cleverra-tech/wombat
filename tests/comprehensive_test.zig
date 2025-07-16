@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const wombat = @import("wombat.zig");
+const wombat = @import("../lib/wombat.zig");
 
 // Comprehensive test suite for the Wombat LSM-Tree database
 // This test suite covers integration, performance, edge cases, and correctness

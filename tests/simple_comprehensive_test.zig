@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const wombat = @import("wombat.zig");
+const wombat = @import("../lib/wombat.zig");
 
 // Simplified comprehensive test suite for the Wombat LSM-Tree database
 
@@ -48,7 +48,7 @@ test "Database basic operations" {
     try testing.expect(stats.gets_total >= 3);
     try testing.expect(stats.deletes_total >= 1);
 
-    std.debug.print("✅ Database basic operations test passed\n", .{});
+    std.debug.print("Database basic operations test passed\n", .{});
 }
 
 test "Transaction basic operations" {
@@ -93,7 +93,7 @@ test "Transaction basic operations" {
         try testing.expect(false);
     }
 
-    std.debug.print("✅ Transaction basic operations test passed\n", .{});
+    std.debug.print("Transaction basic operations test passed\n", .{});
 }
 
 test "Component basic verification" {
@@ -104,12 +104,12 @@ test "Component basic verification" {
     // Test Oracle basic functionality
     var oracle = try wombat.Oracle.init(allocator);
     defer oracle.deinit();
-    
+
     const ts1 = try oracle.newReadTs();
     const ts2 = try oracle.newReadTs();
     try testing.expect(ts2 > ts1);
 
-    std.debug.print("✅ Component basic verification passed\n", .{});
+    std.debug.print("Component basic verification passed\n", .{});
 }
 
 /// Helper function to clean up test directories

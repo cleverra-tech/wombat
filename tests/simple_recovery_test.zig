@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const wombat = @import("wombat.zig");
+const wombat = @import("../lib/wombat.zig");
 
 // Simplified crash recovery and persistence test suite
 // Focus on basic data persistence without complex transaction scenarios
@@ -60,7 +60,7 @@ test "Basic data persistence across database restarts" {
         }
     }
 
-    std.debug.print("✅ Basic data persistence test passed\n", .{});
+    std.debug.print("Basic data persistence test passed\n", .{});
 }
 
 test "Data durability with sync operations" {
@@ -75,7 +75,7 @@ test "Data durability with sync operations" {
     {
         var options = wombat.Options.default(test_dir);
         options.sync_writes = false; // Manually control sync
-        
+
         var db = try wombat.DB.open(allocator, options);
 
         // Write data batch 1
@@ -83,7 +83,7 @@ test "Data durability with sync operations" {
         try db.set("sync_key_2", "sync_value_2");
         try db.sync(); // Explicitly sync
 
-        // Write data batch 2  
+        // Write data batch 2
         try db.set("sync_key_3", "sync_value_3");
         try db.set("sync_key_4", "sync_value_4");
         // Don't sync batch 2 - simulate potential data loss
@@ -116,7 +116,7 @@ test "Data durability with sync operations" {
         // This test just ensures the synced data is durable
     }
 
-    std.debug.print("✅ Data durability test passed\n", .{});
+    std.debug.print("Data durability test passed\n", .{});
 }
 
 test "Large dataset persistence" {
@@ -142,7 +142,7 @@ test "Large dataset persistence" {
             var value_buf: [64]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "large_key_{:0>6}", .{i});
             const value = try std.fmt.bufPrint(&value_buf, "large_value_{}_with_data", .{i});
-            
+
             try db.set(key, value);
 
             // Periodic sync to ensure durability
@@ -166,7 +166,7 @@ test "Large dataset persistence" {
         for (0..num_entries) |i| {
             var key_buf: [32]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "large_key_{:0>6}", .{i});
-            
+
             if (try db.get(key)) |value| {
                 defer allocator.free(value);
                 try testing.expect(std.mem.startsWith(u8, value, "large_value_"));
@@ -176,11 +176,11 @@ test "Large dataset persistence" {
 
         // Should recover most or all data
         try testing.expect(recovered_count >= num_entries * 90 / 100); // At least 90%
-        
+
         std.debug.print("Recovered {}/{} entries from large dataset\n", .{ recovered_count, num_entries });
     }
 
-    std.debug.print("✅ Large dataset persistence test passed\n", .{});
+    std.debug.print("Large dataset persistence test passed\n", .{});
 }
 
 test "Database consistency after multiple open/close cycles" {
@@ -197,7 +197,7 @@ test "Database consistency after multiple open/close cycles" {
     for (0..5) |cycle| {
         var options = wombat.Options.default(test_dir);
         options.sync_writes = true;
-        
+
         var db = try wombat.DB.open(allocator, options);
 
         // Add data in each cycle
@@ -207,7 +207,7 @@ test "Database consistency after multiple open/close cycles" {
             var value_buf: [64]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "cycle_key_{}", .{i});
             const value = try std.fmt.bufPrint(&value_buf, "cycle_value_{}_round_{}", .{ i, cycle });
-            
+
             try db.set(key, value);
             total_operations += 1;
         }
@@ -217,7 +217,7 @@ test "Database consistency after multiple open/close cycles" {
             const prev_key_idx = (cycle - 1) * 20;
             var prev_key_buf: [32]u8 = undefined;
             const prev_key = try std.fmt.bufPrint(&prev_key_buf, "cycle_key_{}", .{prev_key_idx});
-            
+
             if (try db.get(prev_key)) |value| {
                 defer allocator.free(value);
                 try testing.expect(std.mem.startsWith(u8, value, "cycle_value_"));
@@ -240,7 +240,7 @@ test "Database consistency after multiple open/close cycles" {
         for (0..total_operations) |i| {
             var key_buf: [32]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "cycle_key_{}", .{i});
-            
+
             if (try db.get(key)) |value| {
                 defer allocator.free(value);
                 final_count += 1;
@@ -251,7 +251,7 @@ test "Database consistency after multiple open/close cycles" {
         std.debug.print("Maintained consistency across {} cycles with {} operations\n", .{ 5, total_operations });
     }
 
-    std.debug.print("✅ Multi-cycle consistency test passed\n", .{});
+    std.debug.print("Multi-cycle consistency test passed\n", .{});
 }
 
 /// Helper function to clean up test directories

@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const wombat = @import("wombat.zig");
+const wombat = @import("../lib/wombat.zig");
 
 // Comprehensive crash recovery and persistence test suite
 // Tests database durability, WAL recovery, manifest consistency, and data integrity after crashes
@@ -64,7 +64,7 @@ test "WAL recovery after simulated crash" {
         try testing.expect(stats.puts_total >= 3);
     }
 
-    std.debug.print("✅ WAL recovery test passed\n", .{});
+    std.debug.print("WAL recovery test passed\n", .{});
 }
 
 test "Transaction recovery and rollback consistency" {
@@ -126,7 +126,7 @@ test "Transaction recovery and rollback consistency" {
         try testing.expect(uncommitted2 == null);
     }
 
-    std.debug.print("✅ Transaction recovery test passed\n", .{});
+    std.debug.print("Transaction recovery test passed\n", .{});
 }
 
 test "Manifest consistency after crash" {
@@ -169,7 +169,7 @@ test "Manifest consistency after crash" {
         for (0..200) |i| {
             var key_buf: [32]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "manifest_key_{:0>6}", .{i});
-            
+
             if (try db.get(key)) |value| {
                 defer allocator.free(value);
                 try testing.expect(value.len > 0);
@@ -185,7 +185,7 @@ test "Manifest consistency after crash" {
         try testing.expect(stats.gets_total >= 200);
     }
 
-    std.debug.print("✅ Manifest consistency test passed\n", .{});
+    std.debug.print("Manifest consistency test passed\n", .{});
 }
 
 test "ValueLog persistence and recovery" {
@@ -212,11 +212,11 @@ test "ValueLog persistence and recovery" {
         for (0..20) |i| {
             var key_buf: [32]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "vlog_key_{}", .{i});
-            
+
             // Modify some bytes to make each value unique
             large_value[0] = @intCast('A' + (i % 26));
             large_value[1] = @intCast('0' + (i % 10));
-            
+
             try db.set(key, large_value);
         }
 
@@ -234,7 +234,7 @@ test "ValueLog persistence and recovery" {
         for (0..20) |i| {
             var key_buf: [32]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "vlog_key_{}", .{i});
-            
+
             if (try db.get(key)) |value| {
                 defer allocator.free(value);
                 try testing.expect(value.len == 500);
@@ -253,7 +253,7 @@ test "ValueLog persistence and recovery" {
         try testing.expect(stats.vlog_size > 0);
     }
 
-    std.debug.print("✅ ValueLog persistence test passed\n", .{});
+    std.debug.print("ValueLog persistence test passed\n", .{});
 }
 
 test "Data integrity after multiple crashes" {
@@ -270,19 +270,19 @@ test "Data integrity after multiple crashes" {
     for (0..5) |cycle| {
         var options = wombat.Options.default(test_dir);
         options.sync_writes = (cycle % 2 == 0); // Alternate sync behavior
-        
+
         var db = try wombat.DB.open(allocator, options);
 
         // Add some data in each cycle
         const start_key = cycle * 50;
         const end_key = start_key + 50;
-        
+
         for (start_key..end_key) |i| {
             var key_buf: [32]u8 = undefined;
             var value_buf: [64]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "multi_crash_key_{}", .{i});
             const value = try std.fmt.bufPrint(&value_buf, "multi_crash_value_{}_cycle_{}", .{ i, cycle });
-            
+
             try db.set(key, value);
             total_keys += 1;
         }
@@ -291,7 +291,7 @@ test "Data integrity after multiple crashes" {
         if (cycle % 2 == 0) {
             try db.sync();
         }
-        
+
         try db.close();
     }
 
@@ -302,12 +302,12 @@ test "Data integrity after multiple crashes" {
         defer db.close() catch {};
 
         var recovered_keys: u32 = 0;
-        
+
         // Check which data survived
         for (0..total_keys) |i| {
             var key_buf: [32]u8 = undefined;
             const key = try std.fmt.bufPrint(&key_buf, "multi_crash_key_{}", .{i});
-            
+
             if (try db.get(key)) |value| {
                 defer allocator.free(value);
                 try testing.expect(std.mem.startsWith(u8, value, "multi_crash_value_"));
@@ -318,11 +318,11 @@ test "Data integrity after multiple crashes" {
         // Should have recovered a significant portion of data
         // Even with crashes, synced data should survive
         try testing.expect(recovered_keys >= total_keys / 2);
-        
+
         std.debug.print("Recovered {}/{} keys after {} crash cycles\n", .{ recovered_keys, total_keys, 5 });
     }
 
-    std.debug.print("✅ Multiple crash recovery test passed\n", .{});
+    std.debug.print("Multiple crash recovery test passed\n", .{});
 }
 
 test "Concurrent operation recovery" {
@@ -343,13 +343,13 @@ test "Concurrent operation recovery" {
 
         // Mix of regular operations and transactions
         try db.set("regular_key_1", "regular_value_1");
-        
+
         var txn1 = try db.newTransaction();
         try txn1.set("txn_key_1", "txn_value_1");
         try db.commitTransaction(txn1);
-        
+
         try db.set("regular_key_2", "regular_value_2");
-        
+
         var txn2 = try db.newTransaction();
         try txn2.set("txn_key_2", "txn_value_2");
         try txn2.delete("regular_key_1"); // Delete previous key
@@ -404,7 +404,7 @@ test "Concurrent operation recovery" {
         }
     }
 
-    std.debug.print("✅ Concurrent operation recovery test passed\n", .{});
+    std.debug.print("Concurrent operation recovery test passed\n", .{});
 }
 
 /// Helper function to clean up test directories

@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const wombat = @import("wombat.zig");
+const wombat = @import("../lib/wombat.zig");
 
 // Minimal recovery test to validate basic functionality
 test "Minimal database functionality" {
@@ -21,11 +21,11 @@ test "Minimal database functionality" {
         const stats = db.getStats();
         try testing.expect(stats.puts_total == 0);
         try testing.expect(stats.gets_total == 0);
-        
-        std.debug.print("✅ Database creation successful\n", .{});
+
+        std.debug.print("Database creation successful\n", .{});
     }
 
-    std.debug.print("✅ Minimal database test passed\n", .{});
+    std.debug.print("Minimal database test passed\n", .{});
 }
 
 /// Helper function to clean up test directories
