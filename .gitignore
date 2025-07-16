@@ -32,4 +32,5 @@ Thumbs.db
 # Database files (for testing)
 *.sst
 *.wal
-*.manifest
+*.manifest.zig-cache/
+zig-out/
