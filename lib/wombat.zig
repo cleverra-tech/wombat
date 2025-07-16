@@ -28,6 +28,10 @@ pub const VLogFile = @import("wombat/storage/vlog.zig").VLogFile;
 // Transaction modules
 pub const Oracle = @import("wombat/transaction/oracle.zig").Oracle;
 pub const Transaction = @import("wombat/transaction/oracle.zig").Transaction;
+pub const WriteEntry = @import("wombat/transaction/oracle.zig").WriteEntry;
+pub const TransactionState = @import("wombat/transaction/oracle.zig").TransactionState;
+pub const CommittedTxn = @import("wombat/transaction/oracle.zig").CommittedTxn;
+pub const OracleStats = @import("wombat/transaction/oracle.zig").OracleStats;
 pub const WaterMark = @import("wombat/transaction/watermark.zig").WaterMark;
 pub const WaterMarkGroup = @import("wombat/transaction/watermark.zig").WaterMarkGroup;
 pub const WaterMarkSnapshot = @import("wombat/transaction/watermark.zig").WaterMarkSnapshot;
