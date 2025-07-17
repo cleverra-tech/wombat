@@ -26,8 +26,8 @@ graph TB
 
 ```mermaid
 graph LR
-    subgraph "Available Algorithms"
-        A[None] --> B[Identity/Raw]
+    subgraph "Implemented Algorithms"
+        A[None] --> B[No Compression]
         C[Zlib] --> D[Deflate Algorithm]
     end
     
@@ -40,10 +40,12 @@ graph LR
 
 ### Algorithm Characteristics
 
-| Algorithm | Compression Ratio | CPU Usage | Compress Speed | Decompress Speed |
-|-----------|-------------------|-----------|----------------|------------------|
-| None      | 1.0x              | None      | Fastest        | Fastest          |
-| Zlib      | 2-4x              | Medium    | Medium         | Fast             |
+| Algorithm | Compression Ratio | CPU Usage | Compress Speed | Decompress Speed | Status |
+|-----------|-------------------|-----------|----------------|------------------|---------|
+| None      | 1.0x              | None      | Fastest        | Fastest          | Implemented |
+| Zlib      | 2-4x              | Medium    | Medium         | Fast             | Implemented |
+
+**Note**: Additional compression algorithms (LZ4, Snappy, Zstd) are not yet implemented but can be added to the compression framework.
 
 ## Configuration
 

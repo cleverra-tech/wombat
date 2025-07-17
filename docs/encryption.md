@@ -21,17 +21,19 @@ graph TB
 
 ## Supported Algorithms
 
-### AES-256-GCM (Default)
+### AES-256-GCM (Implemented)
 - **Key Size**: 256 bits
 - **Block Mode**: Galois/Counter Mode
 - **Authentication**: Built-in AEAD
 - **Performance**: Hardware accelerated on modern CPUs
+- **Status**: Implemented
 
-### ChaCha20-Poly1305
+### ChaCha20-Poly1305 (Planned)
 - **Key Size**: 256 bits
 - **Stream Cipher**: ChaCha20
 - **Authentication**: Poly1305 MAC
 - **Performance**: Software optimized
+- **Status**: Not yet implemented
 
 ## Configuration
 

@@ -1,6 +1,8 @@
 # Deployment Guide
 
-This guide covers deployment strategies, configuration, and operational considerations for Wombat database in production environments.
+This guide covers basic deployment strategies and configuration for Wombat database. It focuses on manual deployment and basic configuration, as advanced orchestration features are not yet implemented.
+
+**Note**: Advanced deployment features like Docker images, Kubernetes manifests, and service management are provided as examples and templates for implementation.
 
 ## Deployment Architecture
 

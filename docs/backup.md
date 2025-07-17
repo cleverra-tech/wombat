@@ -1,6 +1,8 @@
 # Backup and Restore
 
-This document covers backup and restore procedures for Wombat database, including data protection strategies and recovery procedures.
+This document provides guidance for implementing backup and restore procedures for Wombat database. 
+
+**Note**: Automated backup and restore features are not yet implemented in Wombat core. This document serves as an implementation guide for building backup solutions on top of the existing database files and WAL system.
 
 ## Backup Overview
 
