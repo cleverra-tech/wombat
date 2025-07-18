@@ -1969,7 +1969,7 @@ pub const TableBuilder = struct {
             return TableError.OutOfMemory;
         };
 
-        const index = TableIndex.init(allocator, 1000) catch {
+        const index = TableIndex.init(allocator, @max(100, options.bloom_expected_items / 10)) catch {
             var mutable_bloom = bloom_filter;
             mutable_bloom.deinit(allocator);
             file.close();
