@@ -414,13 +414,64 @@ pub const Txn = struct {
         return null; // Key not found or no visible version
     }
 
-    /// Mock implementation - would apply writes to DB
+    /// Apply transaction writes to database with commit timestamp
     fn applyWrites(self: *Self) TxnError!void {
-        _ = self;
-        // In real implementation, this would:
-        // 1. Add writes to current memtable with commit timestamp
-        // 2. Ensure writes are durable (WAL)
-        // 3. Update indexes if needed
+        if (self.writes.items.len == 0) {
+            return; // Nothing to apply
+        }
+
+        // Cast the opaque database reference back to DB
+        const db = @as(*@import("../db.zig").DB, @ptrCast(@alignCast(self.db)));
+
+        // Lock memtable once for all writes
+        db.memtable_mutex.lock();
+        defer db.memtable_mutex.unlock();
+
+        // Apply all writes with the commit timestamp
+        for (self.writes.items) |write| {
+            // Check if we should store in ValueLog
+            const use_vlog = write.value.len >= db.options.value_threshold;
+
+            var value_struct = @import("../core/skiplist.zig").ValueStruct{
+                .value = write.value,
+                .timestamp = self.commit_ts,
+                .meta = if (write.deleted) @import("../core/skiplist.zig").ValueStruct.DELETED_FLAG else 0,
+            };
+
+            // Handle ValueLog storage for large values
+            if (use_vlog and write.value.len > 0 and !write.deleted) {
+                const entries = [_]@import("../storage/wal.zig").Entry{@import("../storage/wal.zig").Entry{
+                    .key = write.key,
+                    .value = write.value,
+                    .timestamp = self.commit_ts,
+                    .meta = 0,
+                }};
+
+                const pointers = db.value_log.write(&entries) catch {
+                    return TxnError.InvalidOperation;
+                };
+                defer db.allocator.free(pointers);
+
+                // Serialize ValuePointer into value_struct.value
+                const encoded_ptr = pointers[0].encodeAlloc(db.allocator) catch {
+                    return TxnError.OutOfMemory;
+                };
+
+                // The encoded pointer will be managed by the memtable
+                value_struct.value = encoded_ptr;
+                value_struct.setExternal();
+            }
+
+            // Write to memtable
+            db.memtable.put(write.key, value_struct) catch {
+                return TxnError.InvalidOperation;
+            };
+        }
+
+        // Ensure durability by syncing the memtable's WAL
+        db.memtable.sync() catch {
+            return TxnError.InvalidOperation;
+        };
     }
 };
 
