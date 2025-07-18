@@ -18,7 +18,6 @@ pub const TableError = error{
     InvalidTableFile,
     UnsupportedVersion,
     CorruptedData,
-    CompressionNotImplemented,
     BlockSizeExceeded,
     InvalidKeyOrder,
     ChecksumMismatch,
