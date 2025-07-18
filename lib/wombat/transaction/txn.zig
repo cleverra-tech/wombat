@@ -117,7 +117,6 @@ pub const Txn = struct {
         }
 
         // Get from database with timestamp visibility
-        // This is a mock implementation - in reality would call DB.getAt(key, read_ts)
         return self.getFromDB(key);
     }
 
