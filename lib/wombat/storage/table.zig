@@ -1200,8 +1200,23 @@ pub const Table = struct {
 
     /// Verify table integrity (checksum validation)
     pub fn verifyChecksum(self: *Self) TableError!void {
-        // TODO: Implement checksum verification
-        _ = self;
+        const file_size = self.file.?.len;
+        if (file_size < 49) return TableError.CorruptedData;
+        
+        const footer = self.file.?[file_size - 49..];
+        const stored_checksum = std.mem.readInt(u32, footer[44..48], .little);
+        const checksum_type = @as(ChecksumType, @enumFromInt(footer[48]));
+        
+        switch (checksum_type) {
+            .none => return,
+            .crc32 => {
+                const data_to_check = self.file.?[0..file_size - 49];
+                const calculated_checksum = std.hash.crc.Crc32.hash(data_to_check);
+                if (calculated_checksum != stored_checksum) {
+                    return TableError.ChecksumMismatch;
+                }
+            },
+        }
     }
 
     /// Check if this table overlaps with the given key range
@@ -1583,13 +1598,15 @@ pub const TableBuilder = struct {
             const first_entry = self.current_block_entries.items[0];
             const last_entry = self.current_block_entries.items[self.current_block_entries.items.len - 1];
 
+            const calculated_checksum = std.hash.crc.Crc32.hash(enhanced_block.items);
+            
             const block_info = BlockIndex.BlockInfo{
                 .first_key = try self.allocator.dupe(u8, first_entry.key),
                 .last_key = try self.allocator.dupe(u8, last_entry.key),
                 .offset = self.current_block_offset,
                 .size = @intCast(enhanced_block.items.len),
                 .entry_count = entry_count,
-                .checksum = 0, // TODO: Calculate actual checksum
+                .checksum = calculated_checksum,
                 .compression = self.compression,
                 .max_timestamp = max_timestamp,
                 .min_timestamp = min_timestamp,
