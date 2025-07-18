@@ -9,6 +9,10 @@ const Options = @import("../core/options.zig").Options;
 const CompressionType = @import("../core/options.zig").CompressionType;
 const Compressor = @import("../compression/compressor.zig").Compressor;
 
+// Use the same validation limits as the configuration system
+const MAX_KEY_SIZE = 1024 * 1024; // 1MB (matches ValidationConfig default)
+const MAX_VALUE_SIZE = 1024 * 1024 * 1024; // 1GB (matches ValidationConfig default)
+
 /// Table errors
 pub const TableError = error{
     InvalidTableFile,
@@ -1728,8 +1732,8 @@ pub const Table = struct {
 
             // Validate entry bounds
             if (offset + key_len + value_len > block_data.len) break;
-            if (key_len == 0 or key_len > 1024 * 1024) break; // Reasonable key size limits
-            if (value_len > 1024 * 1024 * 1024) break; // Reasonable value size limits
+            if (key_len == 0 or key_len > MAX_KEY_SIZE) break; // Reasonable key size limits
+            if (value_len > MAX_VALUE_SIZE) break; // Reasonable value size limits
 
             const entry_key = block_data[offset .. offset + key_len];
             offset += key_len;
@@ -1874,8 +1878,8 @@ pub const TableIterator = struct {
 
                     // Validate entry bounds and sizes
                     if (self.block_offset + key_len + value_len <= data.len and
-                        key_len > 0 and key_len <= 1024 * 1024 and
-                        value_len <= 1024 * 1024 * 1024)
+                        key_len > 0 and key_len <= MAX_KEY_SIZE and
+                        value_len <= MAX_VALUE_SIZE)
                     {
                         const key = data[self.block_offset .. self.block_offset + key_len];
                         self.block_offset += key_len;
@@ -2079,10 +2083,10 @@ pub const TableBuilder = struct {
         const entry_size = 4 + 4 + 8 + key.len + value.value.len;
 
         // Validate reasonable sizes
-        if (key.len == 0 or key.len > 1024 * 1024) {
+        if (key.len == 0 or key.len > MAX_KEY_SIZE) {
             return TableError.InvalidKeyOrder;
         }
-        if (value.value.len > 1024 * 1024 * 1024) {
+        if (value.value.len > MAX_VALUE_SIZE) {
             return TableError.BlockSizeExceeded;
         }
 

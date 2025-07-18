@@ -674,7 +674,7 @@ pub const DB = struct {
         self.updateStats(.gets_total, 1);
 
         // Validate key
-        if (key.len == 0 or key.len > 1024 * 1024) {
+        if (key.len == 0 or key.len > self.options.validation_config.max_key_size) {
             const err = if (key.len == 0) DBError.InvalidKey else DBError.KeyTooLarge;
             self.error_metrics.recordError(DBError, err);
             ErrorSystem.logError(DBError, err, context);
@@ -805,13 +805,13 @@ pub const DB = struct {
         }
 
         // Validate inputs
-        if (key.len == 0 or key.len > 1024 * 1024) {
+        if (key.len == 0 or key.len > self.options.validation_config.max_key_size) {
             const err = if (key.len == 0) DBError.InvalidKey else DBError.KeyTooLarge;
             self.error_metrics.recordError(DBError, err);
             ErrorSystem.logError(DBError, err, context);
             return err;
         }
-        if (value.len > 1024 * 1024 * 1024) {
+        if (value.len > self.options.validation_config.max_value_size) {
             self.error_metrics.recordError(DBError, DBError.ValueTooLarge);
             ErrorSystem.logError(DBError, DBError.ValueTooLarge, context);
             return DBError.ValueTooLarge;
@@ -878,7 +878,7 @@ pub const DB = struct {
             return DBError.DatabaseClosed;
         }
 
-        if (key.len == 0 or key.len > 1024 * 1024) {
+        if (key.len == 0 or key.len > self.options.validation_config.max_key_size) {
             return DBError.InvalidKey;
         }
 
