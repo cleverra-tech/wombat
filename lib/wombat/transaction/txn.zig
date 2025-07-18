@@ -341,15 +341,77 @@ pub const Txn = struct {
         return TxnIterator.init(self, start_key, end_key, reverse);
     }
 
-    /// Mock implementation - would be replaced with actual DB calls
+    /// Get value from database with MVCC timestamp visibility
     fn getFromDB(self: *Self, key: []const u8) TxnError!?[]const u8 {
-        _ = self;
-        _ = key;
-        // In real implementation, this would:
-        // 1. Check memtables for key with timestamp <= read_ts
-        // 2. Check SST files for key with timestamp <= read_ts
-        // 3. Return most recent visible version
-        return null; // Mock: key not found
+        // Cast the opaque database reference back to DB
+        const db = @as(*@import("../db.zig").DB, @ptrCast(@alignCast(self.db)));
+
+        // Check current memtable first with timestamp filtering
+        if (db.memtable.get(key)) |value| {
+            if (value.timestamp <= self.read_ts) {
+                if (value.isDeleted()) {
+                    return null;
+                }
+
+                // Handle external values stored in ValueLog
+                if (value.isExternal()) {
+                    const ptr = @import("../storage/vlog.zig").ValuePointer.decode(value.value) catch {
+                        return TxnError.InvalidOperation;
+                    };
+                    return db.value_log.read(ptr, self.allocator) catch TxnError.InvalidOperation;
+                }
+
+                // Return inline value
+                return self.allocator.dupe(u8, value.value) catch TxnError.OutOfMemory;
+            }
+        }
+
+        // Check immutable memtables with timestamp filtering
+        db.memtable_mutex.lock();
+        defer db.memtable_mutex.unlock();
+
+        for (db.immutable_tables.items) |immutable| {
+            if (immutable.get(key)) |value| {
+                if (value.timestamp <= self.read_ts) {
+                    if (value.isDeleted()) {
+                        return null;
+                    }
+
+                    // Handle external values
+                    if (value.isExternal()) {
+                        const ptr = @import("../storage/vlog.zig").ValuePointer.decode(value.value) catch {
+                            return TxnError.InvalidOperation;
+                        };
+                        return db.value_log.read(ptr, self.allocator) catch TxnError.InvalidOperation;
+                    }
+
+                    // Return inline value
+                    return self.allocator.dupe(u8, value.value) catch TxnError.OutOfMemory;
+                }
+            }
+        }
+
+        // Check SST files in levels with timestamp filtering
+        if (db.levels.get(key) catch null) |value| {
+            if (value.timestamp <= self.read_ts) {
+                if (value.isDeleted()) {
+                    return null;
+                }
+
+                // Handle external values
+                if (value.isExternal()) {
+                    const ptr = @import("../storage/vlog.zig").ValuePointer.decode(value.value) catch {
+                        return TxnError.InvalidOperation;
+                    };
+                    return db.value_log.read(ptr, self.allocator) catch TxnError.InvalidOperation;
+                }
+
+                // Return inline value - levels.get() already allocates memory
+                return value.value;
+            }
+        }
+
+        return null; // Key not found or no visible version
     }
 
     /// Mock implementation - would apply writes to DB
