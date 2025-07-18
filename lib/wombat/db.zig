@@ -1244,7 +1244,9 @@ pub const DB = struct {
             }
 
             // Sleep longer if no compaction was needed
-            const sleep_time: u64 = if (compacted) 10000000 else 100000000; // 10ms vs 100ms
+            const base_delay_ms = self.options.retry_config.initial_delay_ms;
+            const sleep_time_ms: u64 = if (compacted) base_delay_ms / 10 else base_delay_ms;
+            const sleep_time: u64 = sleep_time_ms * 1000000; // Convert ms to nanoseconds
             std.Thread.sleep(sleep_time);
         }
     }
