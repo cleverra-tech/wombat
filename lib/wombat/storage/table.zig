@@ -571,12 +571,13 @@ pub const FilterIndex = struct {
     }
 
     pub fn mightContain(self: *const FilterIndex, key: []const u8) bool {
-        // Check global filter first for quick rejection
-        if (self.global_filter) |filter| {
-            if (!filter.contains(key)) {
-                return false;
-            }
-        }
+        // Skip global filter check temporarily for backward compatibility
+        // TODO: Re-enable global filter once initialization is verified
+        // if (self.global_filter) |filter| {
+        //     if (!filter.contains(key)) {
+        //         return false;
+        //     }
+        // }
 
         // Check relevant partitions
         for (self.partitions.items) |partition| {
@@ -587,7 +588,7 @@ pub const FilterIndex = struct {
             }
         }
 
-        return true; // Conservative approach
+        return true; // Conservative approach - if no partition matches, allow the lookup
     }
 
     pub fn addKey(self: *FilterIndex, key: []const u8, block_index: u32) !void {
@@ -1416,13 +1417,17 @@ pub const Table = struct {
             if (FilterIndex.deserialize(filter_index_data, allocator)) |deserialized| {
                 filter_index = deserialized;
             } else |err| {
-                // If deserialization fails, initialize empty filter index for compatibility
-                if (err == error.BufferTooSmall) {
-                    filter_index = FilterIndex.init(allocator, 1000);
-                } else {
-                    var mutable_mmap = mmap_file;
-                    mutable_mmap.close();
-                    return TableError.CorruptedData;
+                // Handle deserialization errors gracefully for backward compatibility
+                switch (err) {
+                    error.BufferTooSmall => {
+                        // Initialize empty filter index for old format compatibility
+                        filter_index = FilterIndex.init(allocator, 1000);
+                    },
+                    else => {
+                        var mutable_mmap = mmap_file;
+                        mutable_mmap.close();
+                        return TableError.CorruptedData;
+                    },
                 }
             }
         }
@@ -1556,18 +1561,16 @@ pub const Table = struct {
     pub fn get(self: *Self, key: []const u8) TableError!?ValueStruct {
         self.stats.reads_total += 1;
 
-        // Check partitioned filter index first for better performance (temporarily disabled)
-        // TODO: Fix filter index loading to re-enable this optimization
-        // if (!self.filter_index.mightContain(key)) {
-        //     return null;
-        // }
+        // Check partitioned filter index first for better performance
+        if (!self.filter_index.mightContain(key)) {
+            return null;
+        }
 
-        // Check global bloom filter as secondary filter (temporarily disabled for compatibility)
-        // TODO: Fix bloom filter deserialization to re-enable this optimization
-        // if (!self.bloom_filter.contains(key)) {
-        //     self.stats.bloom_false_positives += 1;
-        //     return null;
-        // }
+        // Check global bloom filter as secondary filter
+        if (!self.bloom_filter.contains(key)) {
+            self.stats.bloom_false_positives += 1;
+            return null;
+        }
 
         // Use enhanced block index to find the exact block
         const block_index = self.block_index.findBlock(key) orelse
