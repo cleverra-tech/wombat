@@ -336,6 +336,11 @@ pub const Txn = struct {
         return size;
     }
 
+    /// Create an iterator for scanning keys in a range with read-your-writes consistency
+    pub fn scan(self: *Self, start_key: ?[]const u8, end_key: ?[]const u8, reverse: bool) TxnIterator {
+        return TxnIterator.init(self, start_key, end_key, reverse);
+    }
+
     /// Mock implementation - would be replaced with actual DB calls
     fn getFromDB(self: *Self, key: []const u8) TxnError!?[]const u8 {
         _ = self;
@@ -378,9 +383,107 @@ pub const TxnIterator = struct {
     }
 
     pub fn next(self: *Self) TxnError!bool {
-        // Mock implementation
-        _ = self;
+        // Implementation of transaction iterator for scanning
+        // This scans through the transaction's write cache to provide
+        // read-your-writes consistency for range queries
+
+        if (self.current_key == null) {
+            // First call - find the starting position
+            return self.seekToStart();
+        } else {
+            // Subsequent calls - advance to next key
+            return self.advance();
+        }
+    }
+
+    fn seekToStart(self: *Self) TxnError!bool {
+        // Find the first key in range from the write cache
+        var best_key: ?[]const u8 = null;
+
+        var iter = self.txn.write_cache.iterator();
+        while (iter.next()) |entry| {
+            const entry_key = entry.value_ptr.key;
+
+            // Check if key is in range
+            if (!self.isKeyInRange(entry_key)) continue;
+
+            // Skip deleted entries
+            if (entry.value_ptr.deleted) continue;
+
+            // Find the best key based on direction
+            if (best_key == null or self.compareKeys(entry_key, best_key.?)) {
+                best_key = entry_key;
+            }
+        }
+
+        if (best_key) |found_key| {
+            self.current_key = found_key;
+            return true;
+        }
+
         return false;
+    }
+
+    fn advance(self: *Self) TxnError!bool {
+        if (self.current_key == null) return false;
+
+        var best_key: ?[]const u8 = null;
+        const current = self.current_key.?;
+
+        var iter = self.txn.write_cache.iterator();
+        while (iter.next()) |entry| {
+            const entry_key = entry.value_ptr.key;
+
+            // Check if key is in range
+            if (!self.isKeyInRange(entry_key)) continue;
+
+            // Skip deleted entries
+            if (entry.value_ptr.deleted) continue;
+
+            // Skip current key and keys before it (or after if reverse)
+            if (self.reverse) {
+                if (std.mem.order(u8, entry_key, current) != .lt) continue;
+            } else {
+                if (std.mem.order(u8, entry_key, current) != .gt) continue;
+            }
+
+            // Find the next best key
+            if (best_key == null or self.compareKeys(entry_key, best_key.?)) {
+                best_key = entry_key;
+            }
+        }
+
+        if (best_key) |found_key| {
+            self.current_key = found_key;
+            return true;
+        }
+
+        self.current_key = null;
+        return false;
+    }
+
+    fn isKeyInRange(self: *Self, check_key: []const u8) bool {
+        // Check start bound
+        if (self.start_key) |start| {
+            if (std.mem.order(u8, check_key, start) == .lt) {
+                return false;
+            }
+        }
+
+        // Check end bound
+        if (self.end_key) |end| {
+            if (std.mem.order(u8, check_key, end) != .lt) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    fn compareKeys(self: *Self, key1: []const u8, key2: []const u8) bool {
+        // Returns true if key1 is "better" than key2 for iteration
+        const cmp = std.mem.order(u8, key1, key2);
+        return if (self.reverse) cmp == .gt else cmp == .lt;
     }
 
     pub fn key(self: *Self) []const u8 {
