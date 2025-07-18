@@ -393,7 +393,9 @@ pub const DB = struct {
                 fs.cwd().access(full_path, .{}) catch |err| switch (err) {
                     error.FileNotFound => {
                         // Table file missing - remove from manifest
-                        self.manifest.removeTable(table_info.id) catch {};
+                        self.manifest.removeTable(table_info.id) catch |remove_err| {
+                            std.log.warn("Failed to remove missing table {} from manifest: {}", .{ table_info.id, remove_err });
+                        };
                         continue;
                     },
                     else => continue,
@@ -1379,7 +1381,9 @@ pub const DB = struct {
                 error.OutOfMemory => {
                     std.log.err("Compaction failed due to OOM: level {}", .{job.level});
                     // Trigger space reclamation to free disk space
-                    _ = self.value_log.runSpaceReclamation(0.3) catch {};
+                    _ = self.value_log.runSpaceReclamation(0.3) catch |space_err| {
+                        std.log.err("Failed to reclaim space after OOM: {}", .{space_err});
+                    };
                 },
                 error.IOError => {
                     std.log.err("Compaction failed due to IO error: level {}", .{job.level});

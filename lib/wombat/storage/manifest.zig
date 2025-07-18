@@ -322,7 +322,10 @@ pub const ManifestFile = struct {
         while (lines.next()) |line| {
             if (line.len == 0) continue;
 
-            const parsed = json.parseFromSlice(ManifestChange, self.allocator, line, .{}) catch continue;
+            const parsed = json.parseFromSlice(ManifestChange, self.allocator, line, .{}) catch |err| {
+                std.log.warn("Failed to parse manifest line: {s}, error: {}", .{ line, err });
+                continue;
+            };
             defer parsed.deinit();
 
             try self.applyChange(parsed.value);
