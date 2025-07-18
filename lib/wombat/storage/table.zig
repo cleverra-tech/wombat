@@ -590,7 +590,7 @@ pub const FilterIndex = struct {
             }
         }
 
-        return true; // Conservative approach - if no partition matches, allow the lookup
+        return true; // Conservative approach - if no partition matches, allow the lookup to avoid false negatives
     }
 
     pub fn addKey(self: *FilterIndex, key: []const u8, block_index: u32) !void {
@@ -605,6 +605,16 @@ pub const FilterIndex = struct {
                 block_index <= partition.block_range.end)
             {
                 partition.filter.add(key);
+
+                // Update key range for this partition
+                if (std.mem.order(u8, key, partition.start_key) == .lt) {
+                    self.allocator.free(partition.start_key);
+                    partition.start_key = try self.allocator.dupe(u8, key);
+                }
+                if (std.mem.order(u8, key, partition.end_key) == .gt) {
+                    self.allocator.free(partition.end_key);
+                    partition.end_key = try self.allocator.dupe(u8, key);
+                }
                 return;
             }
         }
