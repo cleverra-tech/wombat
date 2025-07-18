@@ -571,13 +571,12 @@ pub const FilterIndex = struct {
     }
 
     pub fn mightContain(self: *const FilterIndex, key: []const u8) bool {
-        // Skip global filter check temporarily for backward compatibility
-        // TODO: Re-enable global filter once initialization is verified
-        // if (self.global_filter) |filter| {
-        //     if (!filter.contains(key)) {
-        //         return false;
-        //     }
-        // }
+        // Check global filter first for quick rejection
+        if (self.global_filter) |filter| {
+            if (!filter.contains(key)) {
+                return false;
+            }
+        }
 
         // Check relevant partitions
         for (self.partitions.items) |partition| {
@@ -592,6 +591,11 @@ pub const FilterIndex = struct {
     }
 
     pub fn addKey(self: *FilterIndex, key: []const u8, block_index: u32) !void {
+        // Add to global filter if it exists
+        if (self.global_filter) |*global_filter| {
+            global_filter.add(key);
+        }
+
         // Find or create appropriate partition
         for (self.partitions.items) |*partition| {
             if (block_index >= partition.block_range.start and
@@ -619,16 +623,14 @@ pub const FilterIndex = struct {
     }
 
     pub fn finalizePartitions(self: *FilterIndex, expected_items: usize) !void {
-        // Create global filter
-        self.global_filter = try BloomFilter.init(self.allocator, expected_items, 0.01);
+        _ = self; // No work needed - global filter already populated
+        _ = expected_items; // Global filter already created with appropriate size
 
-        // Add all keys to global filter
-        for (self.partitions.items) |partition| {
-            _ = partition;
-            // Note: This is a simplified approach. In practice, you'd need to
-            // iterate through all keys that were added to each partition
-            // For now, we'll rely on the individual partition filters
-        }
+        // Global filter is already populated during key addition via addKey()
+        // No additional work needed here since keys are added incrementally
+
+        // Optionally, we could resize the global filter if needed, but
+        // for simplicity we'll use the pre-allocated size
     }
 
     pub fn serializedSize(self: *const FilterIndex) usize {
@@ -1975,7 +1977,17 @@ pub const TableBuilder = struct {
         };
 
         const block_index = BlockIndex.init(allocator);
-        const filter_index = FilterIndex.init(allocator, 1000);
+        var filter_index = FilterIndex.init(allocator, 1000);
+
+        // Initialize global filter early so keys can be added during building
+        filter_index.global_filter = BloomFilter.init(allocator, 10000, 0.01) catch {
+            var mutable_bloom = bloom_filter;
+            mutable_bloom.deinit(allocator);
+            var mutable_index = index;
+            mutable_index.deinit();
+            file.close();
+            return TableError.OutOfMemory;
+        };
 
         return Self{
             .file = file,
