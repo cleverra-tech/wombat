@@ -375,15 +375,28 @@ pub const Oracle = struct {
             @min(min_read_ts, if (current_ts > self.cleanup_threshold) current_ts - self.cleanup_threshold else 0);
 
         var cleaned_count: usize = 0;
-        while (self.committed_txns.items.len > 0 and
-            self.committed_txns.items[0].commit_ts < safe_cleanup_ts and
+        var cleanup_end: usize = 0;
+
+        // Find how many transactions to clean up
+        while (cleanup_end < self.committed_txns.items.len and
+            self.committed_txns.items[cleanup_end].commit_ts < safe_cleanup_ts and
             cleaned_count < self.max_committed_txns / 4) // Limit cleanup per run
         {
-            const old_txn = self.committed_txns.orderedRemove(0);
+            cleanup_end += 1;
+            cleaned_count += 1;
+        }
+
+        // Free memory for transactions being cleaned up
+        for (self.committed_txns.items[0..cleanup_end]) |old_txn| {
             if (old_txn.conflict_keys.len > 0) {
                 self.allocator.free(old_txn.conflict_keys);
             }
-            cleaned_count += 1;
+        }
+
+        // Remove cleaned transactions efficiently
+        if (cleanup_end > 0) {
+            std.mem.copyForwards(CommittedTxn, self.committed_txns.items[0 .. self.committed_txns.items.len - cleanup_end], self.committed_txns.items[cleanup_end..]);
+            self.committed_txns.items.len -= cleanup_end;
         }
 
         if (cleaned_count > 0) {
@@ -393,13 +406,19 @@ pub const Oracle = struct {
         // Force cleanup if we have too many committed transactions
         if (self.committed_txns.items.len > self.max_committed_txns) {
             const excess = self.committed_txns.items.len - self.max_committed_txns / 2;
-            var force_cleaned: usize = 0;
-            while (force_cleaned < excess and self.committed_txns.items.len > 0) {
-                const old_txn = self.committed_txns.orderedRemove(0);
+            const force_cleanup_end = @min(excess, self.committed_txns.items.len);
+
+            // Free memory for transactions being force cleaned
+            for (self.committed_txns.items[0..force_cleanup_end]) |old_txn| {
                 if (old_txn.conflict_keys.len > 0) {
                     self.allocator.free(old_txn.conflict_keys);
                 }
-                force_cleaned += 1;
+            }
+
+            // Remove force cleaned transactions efficiently
+            if (force_cleanup_end > 0) {
+                std.mem.copyForwards(CommittedTxn, self.committed_txns.items[0 .. self.committed_txns.items.len - force_cleanup_end], self.committed_txns.items[force_cleanup_end..]);
+                self.committed_txns.items.len -= force_cleanup_end;
             }
         }
     }
