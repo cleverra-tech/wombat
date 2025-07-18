@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const crypto = std.crypto;
 const Random = std.rand.Random;
+const Options = @import("../core/options.zig");
 
 /// Encryption errors
 pub const EncryptionError = error{
@@ -17,64 +18,56 @@ pub const EncryptionError = error{
     AuthenticationFailed,
 };
 
-/// Encryption configuration
-pub const EncryptionConfig = struct {
-    /// Whether encryption is enabled
-    enabled: bool = false,
-    /// Key derivation iterations for PBKDF2
-    key_derivation_iterations: u32 = 10000,
-    /// Salt length for key derivation
-    salt_length: usize = 16,
-
-    pub fn default() EncryptionConfig {
-        return EncryptionConfig{};
-    }
-
-    pub fn withEnabled(self: EncryptionConfig, enabled: bool) EncryptionConfig {
-        var config = self;
-        config.enabled = enabled;
-        return config;
-    }
-};
+/// Re-export EncryptionConfig from options for easier access
+pub const EncryptionConfig = Options.EncryptionConfig;
 
 /// Encryption key material
 pub const EncryptionKey = struct {
     /// AES-256 key (32 bytes)
     key: [32]u8,
-    /// Salt used for key derivation
-    salt: [16]u8,
+    /// Salt used for key derivation (dynamically sized)
+    salt: []u8,
+    /// Allocator for salt memory management
+    allocator: Allocator,
 
     const Self = @This();
+
     /// Generate a new random encryption key
-    pub fn generate(random: Random) Self {
+    pub fn generate(random: Random, salt_length: usize, allocator: Allocator) EncryptionError!Self {
         var key: [32]u8 = undefined;
-        var salt: [16]u8 = undefined;
+        const salt = allocator.alloc(u8, salt_length) catch return EncryptionError.OutOfMemory;
+        errdefer allocator.free(salt);
 
         random.bytes(&key);
-        random.bytes(&salt);
+        random.bytes(salt);
         return Self{
             .key = key,
             .salt = salt,
+            .allocator = allocator,
         };
     }
 
     /// Derive key from password using PBKDF2
-    pub fn fromPassword(password: []const u8, salt: [16]u8, iterations: u32) EncryptionError!Self {
+    pub fn fromPassword(password: []const u8, salt: []const u8, iterations: u32, allocator: Allocator) EncryptionError!Self {
         var key: [32]u8 = undefined;
 
-        crypto.pwhash.pbkdf2(&key, password, &salt, iterations, crypto.hash.sha2.Sha256) catch {
+        crypto.pwhash.pbkdf2(&key, password, salt, iterations, crypto.hash.sha2.Sha256) catch {
             return EncryptionError.KeyDerivationFailed;
         };
+
+        const salt_copy = allocator.dupe(u8, salt) catch return EncryptionError.OutOfMemory;
         return Self{
             .key = key,
-            .salt = salt,
+            .salt = salt_copy,
+            .allocator = allocator,
         };
     }
 
     /// Securely clear key material
     pub fn clear(self: *Self) void {
         crypto.utils.secureZero(&self.key);
-        crypto.utils.secureZero(&self.salt);
+        crypto.utils.secureZero(self.salt);
+        self.allocator.free(self.salt);
     }
 };
 
@@ -110,52 +103,60 @@ pub const Encryption = struct {
     }
 
     /// Generate and set a new random key
-    pub fn generateKey(self: *Self) EncryptionKey {
-        const key = EncryptionKey.generate(self.random);
+    pub fn generateKey(self: *Self, allocator: Allocator) EncryptionError!EncryptionKey {
+        const key = try EncryptionKey.generate(self.random, self.config.salt_length, allocator);
         self.setKey(key);
         return key;
     }
 
     /// Set key from password
-    pub fn setKeyFromPassword(self: *Self, password: []const u8) EncryptionError!void {
-        if (!self.config.enabled) return;
+    pub fn setKeyFromPassword(self: *Self, password: []const u8, allocator: Allocator) EncryptionError!void {
+        if (!self.config.enable_encryption) return;
 
-        var salt: [16]u8 = undefined;
-        self.random.bytes(&salt);
+        const salt = allocator.alloc(u8, self.config.salt_length) catch return EncryptionError.OutOfMemory;
+        defer allocator.free(salt);
+        self.random.bytes(salt);
 
-        const key = try EncryptionKey.fromPassword(password, salt, self.config.key_derivation_iterations);
+        const key = try EncryptionKey.fromPassword(password, salt, self.config.key_derivation_iterations, allocator);
         self.setKey(key);
     }
     /// Generate random IV
-    pub fn generateIV(self: *Self) [12]u8 {
-        var iv: [12]u8 = undefined;
-        self.random.bytes(&iv);
+    pub fn generateIV(self: *Self, allocator: Allocator) EncryptionError![]u8 {
+        const iv = allocator.alloc(u8, self.config.iv_length) catch return EncryptionError.OutOfMemory;
+        self.random.bytes(iv);
         return iv;
     }
 
     /// Encrypt data using AES-256-GCM
     pub fn encrypt(self: *Self, plaintext: []const u8, additional_data: []const u8, allocator: Allocator) EncryptionError![]u8 {
-        if (!self.config.enabled) {
+        if (!self.config.enable_encryption) {
             return allocator.dupe(u8, plaintext) catch return EncryptionError.OutOfMemory;
         }
 
         const key = self.key orelse return EncryptionError.InvalidKey;
 
         // Generate random IV
-        const iv = self.generateIV();
+        const iv = try self.generateIV(allocator);
+        defer allocator.free(iv);
+
+        // Validate IV length for AES-GCM (must be 12 bytes for GCM)
+        if (iv.len != 12) {
+            return EncryptionError.InvalidIVLength;
+        }
+
         // Allocate buffer for IV + ciphertext + tag
         const output_len = iv.len + plaintext.len + GCM.tag_length;
         const output = allocator.alloc(u8, output_len) catch return EncryptionError.OutOfMemory;
         errdefer allocator.free(output);
 
         // Copy IV to output
-        @memcpy(output[0..iv.len], &iv);
+        @memcpy(output[0..iv.len], iv);
 
         // Encrypt
         const ciphertext = output[iv.len .. iv.len + plaintext.len];
         const tag = output[iv.len + plaintext.len ..];
 
-        GCM.encrypt(ciphertext, tag, plaintext, additional_data, iv, key.key) catch {
+        GCM.encrypt(ciphertext, tag, plaintext, additional_data, iv[0..12].*, key.key) catch {
             return EncryptionError.EncryptionFailed;
         };
 
@@ -163,26 +164,32 @@ pub const Encryption = struct {
     }
     /// Decrypt data using AES-256-GCM
     pub fn decrypt(self: *Self, ciphertext: []const u8, additional_data: []const u8, allocator: Allocator) EncryptionError![]u8 {
-        if (!self.config.enabled) {
+        if (!self.config.enable_encryption) {
             return allocator.dupe(u8, ciphertext) catch return EncryptionError.OutOfMemory;
         }
 
         const key = self.key orelse return EncryptionError.InvalidKey;
+
+        // Validate IV length for AES-GCM (must be 12 bytes for GCM)
+        if (self.config.iv_length != 12) {
+            return EncryptionError.InvalidIVLength;
+        }
+
         // Minimum size is IV + tag
-        if (ciphertext.len < 12 + GCM.tag_length) {
+        if (ciphertext.len < self.config.iv_length + GCM.tag_length) {
             return EncryptionError.InvalidInput;
         }
 
         // Extract IV, ciphertext, and tag
-        const iv = ciphertext[0..12];
-        const encrypted_data = ciphertext[12 .. ciphertext.len - GCM.tag_length];
+        const iv = ciphertext[0..self.config.iv_length];
+        const encrypted_data = ciphertext[self.config.iv_length .. ciphertext.len - GCM.tag_length];
         const tag = ciphertext[ciphertext.len - GCM.tag_length ..];
 
         // Allocate buffer for plaintext
         const plaintext = allocator.alloc(u8, encrypted_data.len) catch return EncryptionError.OutOfMemory;
         errdefer allocator.free(plaintext);
         // Decrypt and verify
-        GCM.decrypt(plaintext, encrypted_data, tag.*, additional_data, iv.*, key.key) catch {
+        GCM.decrypt(plaintext, encrypted_data, tag.*, additional_data, iv[0..12].*, key.key) catch {
             return EncryptionError.DecryptionFailed;
         };
 
@@ -190,10 +197,15 @@ pub const Encryption = struct {
     }
 
     /// Encrypt data in place (for memory-mapped files)
-    pub fn encryptInPlace(self: *Self, data: []u8, additional_data: []const u8, iv: [12]u8) EncryptionError!void {
-        if (!self.config.enabled) return;
+    pub fn encryptInPlace(self: *Self, data: []u8, additional_data: []const u8, iv: []const u8) EncryptionError!void {
+        if (!self.config.enable_encryption) return;
 
         const key = self.key orelse return EncryptionError.InvalidKey;
+
+        // Validate IV length for AES-GCM (must be 12 bytes for GCM)
+        if (iv.len != 12) {
+            return EncryptionError.InvalidIVLength;
+        }
 
         if (data.len < GCM.tag_length) {
             return EncryptionError.InvalidInput;
@@ -202,16 +214,21 @@ pub const Encryption = struct {
         const plaintext_len = data.len - GCM.tag_length;
         const plaintext = data[0..plaintext_len];
         const tag = data[plaintext_len..];
-        GCM.encrypt(plaintext, tag[0..GCM.tag_length], plaintext, additional_data, iv, key.key) catch {
+        GCM.encrypt(plaintext, tag[0..GCM.tag_length], plaintext, additional_data, iv[0..12].*, key.key) catch {
             return EncryptionError.EncryptionFailed;
         };
     }
 
     /// Decrypt data in place (for memory-mapped files)
-    pub fn decryptInPlace(self: *Self, data: []u8, additional_data: []const u8, iv: [12]u8) EncryptionError!void {
-        if (!self.config.enabled) return;
+    pub fn decryptInPlace(self: *Self, data: []u8, additional_data: []const u8, iv: []const u8) EncryptionError!void {
+        if (!self.config.enable_encryption) return;
 
         const key = self.key orelse return EncryptionError.InvalidKey;
+
+        // Validate IV length for AES-GCM (must be 12 bytes for GCM)
+        if (iv.len != 12) {
+            return EncryptionError.InvalidIVLength;
+        }
 
         if (data.len < GCM.tag_length) {
             return EncryptionError.InvalidInput;
@@ -220,31 +237,31 @@ pub const Encryption = struct {
         const ciphertext_len = data.len - GCM.tag_length;
         const ciphertext = data[0..ciphertext_len];
         const tag = data[ciphertext_len..];
-        GCM.decrypt(ciphertext, ciphertext, tag[0..GCM.tag_length].*, additional_data, iv, key.key) catch {
+        GCM.decrypt(ciphertext, ciphertext, tag[0..GCM.tag_length].*, additional_data, iv[0..12].*, key.key) catch {
             return EncryptionError.DecryptionFailed;
         };
     }
 
     /// Check if encryption is enabled
     pub fn isEnabled(self: *const Self) bool {
-        return self.config.enabled and self.key != null;
+        return self.config.enable_encryption and self.key != null;
     }
 
     /// Get encryption overhead (IV + tag)
     pub fn getOverhead(self: *const Self) usize {
-        if (!self.config.enabled) return 0;
-        return 12 + GCM.tag_length; // IV + tag
+        if (!self.config.enable_encryption) return 0;
+        return self.config.iv_length + GCM.tag_length; // IV + tag
     }
 
     /// Calculate encrypted size
     pub fn getEncryptedSize(self: *const Self, plaintext_size: usize) usize {
-        if (!self.config.enabled) return plaintext_size;
+        if (!self.config.enable_encryption) return plaintext_size;
         return plaintext_size + self.getOverhead();
     }
 
     /// Calculate decrypted size
     pub fn getDecryptedSize(self: *const Self, ciphertext_size: usize) usize {
-        if (!self.config.enabled) return ciphertext_size;
+        if (!self.config.enable_encryption) return ciphertext_size;
         const overhead = self.getOverhead();
         return if (ciphertext_size >= overhead) ciphertext_size - overhead else 0;
     }
@@ -269,10 +286,11 @@ pub const EncryptionUtils = struct {
     }
 
     /// Derive key from password with random salt
-    pub fn deriveKeyWithRandomSalt(password: []const u8, iterations: u32, random: Random) EncryptionError!EncryptionKey {
-        var salt: [16]u8 = undefined;
-        random.bytes(&salt);
-        return EncryptionKey.fromPassword(password, salt, iterations);
+    pub fn deriveKeyWithRandomSalt(password: []const u8, iterations: u32, salt_length: usize, random: Random, allocator: Allocator) EncryptionError!EncryptionKey {
+        const salt = allocator.alloc(u8, salt_length) catch return EncryptionError.OutOfMemory;
+        defer allocator.free(salt);
+        random.bytes(salt);
+        return EncryptionKey.fromPassword(password, salt, iterations, allocator);
     }
 
     /// Check if data appears to be encrypted (basic heuristic)

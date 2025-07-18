@@ -114,6 +114,11 @@ pub const EncryptionConfig = struct {
     key_rotation_interval_days: u32 = 30,
     cipher_mode: enum { aes_gcm, chacha20_poly1305 } = .aes_gcm,
     compress_before_encrypt: bool = true,
+
+    // Key derivation parameters
+    key_derivation_iterations: u32 = 10000,
+    salt_length: usize = 16,
+    iv_length: usize = 12,
 };
 
 /// Configuration for validation limits
