@@ -392,13 +392,52 @@ pub const CompactionPicker = struct {
         return false;
     }
 
-    /// Estimate compaction time
+    /// Estimate compaction time using dynamic factors
     pub fn estimateCompactionTime(self: *const Self, job: *const CompactionJob) u64 {
-        _ = self; // Mark as intentionally unused
-        // Rough estimate: 10 MB/s compaction speed
-        const bytes_per_second = 10 * 1024 * 1024;
-        const estimated_seconds = job.estimated_size / bytes_per_second;
-        return @max(1, estimated_seconds); // At least 1 second
+        // Base throughput varies by level (lower levels are faster due to less seek overhead)
+        var base_throughput: f64 = switch (job.level) {
+            0 => 20.0, // Level 0: Fast, mostly sequential
+            1 => 15.0, // Level 1: Still relatively fast
+            2, 3 => 12.0, // Mid levels: Moderate speed
+            else => 8.0, // Deep levels: Slower due to more random I/O
+        };
+
+        // Strategy affects throughput
+        base_throughput *= switch (self.strategy) {
+            .level => 1.0, // Baseline
+            .size_tiered => 0.9, // Slightly slower due to more complex merging
+            .universal => 0.8, // Slowest due to more comprehensive compaction
+        };
+
+        // Reason affects complexity
+        const reason_multiplier: f64 = switch (job.reason) {
+            .level_full, .size_threshold => 1.0, // Standard compaction
+            .manual => 1.1, // Slightly slower due to comprehensive processing
+            .tombstone_cleanup => 0.9, // Faster since mostly deletion
+            .age_based => 1.0, // Standard speed
+            .read_amplification => 1.2, // Slower due to more complex optimization
+        };
+
+        // File count overhead (more files = more overhead for merging)
+        const file_overhead: f64 = 1.0 + (@as(f64, @floatFromInt(job.inputs.len)) - 1.0) * 0.05;
+
+        // Compression overhead if enabled
+        const compression_overhead: f64 = switch (self.options.compression) {
+            .none => 1.0,
+            .zlib => 1.3, // 30% overhead for compression
+        };
+
+        // Calculate final throughput in MB/s
+        const final_throughput = base_throughput * reason_multiplier / file_overhead / compression_overhead;
+
+        // Convert to bytes per second
+        const bytes_per_second = final_throughput * 1024.0 * 1024.0;
+
+        // Calculate estimated time in seconds
+        const estimated_seconds = @as(f64, @floatFromInt(job.estimated_size)) / bytes_per_second;
+
+        // Return at least 1 second, convert to u64
+        return @max(1, @as(u64, @intFromFloat(@ceil(estimated_seconds))));
     }
 
     /// Get compaction priority explanation
