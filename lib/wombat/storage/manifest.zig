@@ -378,8 +378,11 @@ pub fn createTestTableInfo(allocator: Allocator, id: u64, level: u32) !TableInfo
     const largest = try allocator.dupe(u8, "zzz");
 
     // Calculate checksum based on table characteristics for test consistency
-    var checksum_data: [32]u8 = undefined;
-    const written = std.fmt.bufPrint(&checksum_data, "id{d}lv{d}sz{d}kc{d}", .{ id, level, 1024 * 1024, 1000 }) catch unreachable;
+    // Buffer sized to handle: "id" + 20 digits + "lv" + 10 digits + "sz" + 7 digits + "kc" + 4 digits = 49 chars max
+    var checksum_data: [64]u8 = undefined;
+    const written = std.fmt.bufPrint(&checksum_data, "id{d}lv{d}sz{d}kc{d}", .{ id, level, 1024 * 1024, 1000 }) catch |err| switch (err) {
+        error.NoSpaceLeft => unreachable, // Buffer is properly sized
+    };
     const checksum = std.hash.crc.Crc32.hash(written);
 
     return TableInfo{
