@@ -242,8 +242,8 @@ pub const DB = struct {
         const value_log = try ValueLog.init(allocator, options.value_dir, 10, options.value_log_file_size, options.compression);
         errdefer value_log.deinit();
 
-        var manifest_path_buf: [512]u8 = undefined;
-        const manifest_path = try std.fmt.bufPrint(&manifest_path_buf, "{s}/MANIFEST", .{options.dir});
+        const manifest_path = try std.fmt.allocPrint(allocator, "{s}/MANIFEST", .{options.dir});
+        defer allocator.free(manifest_path);
         const manifest = try ManifestFile.init(allocator, manifest_path);
 
         var levels = LevelsController.init(allocator, &options);
@@ -386,8 +386,8 @@ pub const DB = struct {
 
             for (tables) |table_info| {
                 // Verify table file exists
-                var table_path_buf: [512]u8 = undefined;
-                const full_path = std.fmt.bufPrint(&table_path_buf, "{s}/{s}", .{ self.options.dir, table_info.path }) catch continue;
+                const full_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.options.dir, table_info.path }) catch continue;
+                defer self.allocator.free(full_path);
 
                 fs.cwd().access(full_path, .{}) catch |err| switch (err) {
                     error.FileNotFound => {
@@ -443,8 +443,8 @@ pub const DB = struct {
             // For now, replay all WAL files since we're in recovery mode
 
             // Replay WAL file
-            var wal_path_buf: [512]u8 = undefined;
-            const wal_path = std.fmt.bufPrint(&wal_path_buf, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+            const wal_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+            defer self.allocator.free(wal_path);
 
             std.log.info("Replaying WAL file: {s}", .{entry.name});
             self.replayWAL(wal_path) catch |err| {
@@ -544,16 +544,16 @@ pub const DB = struct {
 
                 // Remove orphaned SST files
                 if (is_orphaned) {
-                    var file_path_buf: [512]u8 = undefined;
-                    const file_path = std.fmt.bufPrint(&file_path_buf, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+                    const file_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+                    defer self.allocator.free(file_path);
                     fs.cwd().deleteFile(file_path) catch {};
                 }
             }
 
             // Check for orphaned temporary files
             if (std.mem.startsWith(u8, entry.name, "tmp_") or std.mem.endsWith(u8, entry.name, ".tmp")) {
-                var file_path_buf: [512]u8 = undefined;
-                const file_path = std.fmt.bufPrint(&file_path_buf, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+                const file_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
+                defer self.allocator.free(file_path);
                 fs.cwd().deleteFile(file_path) catch {};
             }
         }
@@ -584,8 +584,8 @@ pub const DB = struct {
 
                     // Remove unreferenced value log files
                     if (!is_referenced) {
-                        var file_path_buf: [512]u8 = undefined;
-                        const file_path = std.fmt.bufPrint(&file_path_buf, "{s}/{s}", .{ self.options.value_dir, entry.name }) catch continue;
+                        const file_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.options.value_dir, entry.name }) catch continue;
+                        defer self.allocator.free(file_path);
                         fs.cwd().deleteFile(file_path) catch {};
                     }
                 }
@@ -995,8 +995,8 @@ pub const DB = struct {
     fn createMemTable(self: *Self) !*MemTable {
         const memtable_id = self.next_memtable_id.fetchAdd(1, .acq_rel);
 
-        var path_buffer: [512]u8 = undefined;
-        const wal_path = try std.fmt.bufPrint(&path_buffer, "{s}/wal_{d}.log", .{ self.options.dir, memtable_id });
+        const wal_path = try std.fmt.allocPrint(self.allocator, "{s}/wal_{d}.log", .{ self.options.dir, memtable_id });
+        defer self.allocator.free(wal_path);
 
         const memtable = try self.allocator.create(MemTable);
         errdefer self.allocator.destroy(memtable);
@@ -1162,8 +1162,8 @@ pub const DB = struct {
             const table_id = self.next_table_id.fetchAdd(1, .acq_rel);
 
             // Create table info for manifest
-            var table_path_buf: [512]u8 = undefined;
-            const table_path = try std.fmt.bufPrint(&table_path_buf, "table_{}.sst", .{table_id});
+            const table_path = try std.fmt.allocPrint(self.allocator, "table_{}.sst", .{table_id});
+            defer self.allocator.free(table_path);
 
             const table_info = TableInfo{
                 .id = table_id,
