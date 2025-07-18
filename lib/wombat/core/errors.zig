@@ -546,7 +546,7 @@ pub fn retryWithBackoff(
 ) ErrorType!T {
     var attempt: u32 = 0;
 
-    while (attempt <= config.max_retries) {
+    while (true) {
         const result = operation() catch |err| {
             // Record error metrics if available
             if (error_metrics) |metrics| {
@@ -566,8 +566,6 @@ pub fn retryWithBackoff(
 
         return result;
     }
-
-    unreachable;
 }
 
 /// Determine if an error is retryable
