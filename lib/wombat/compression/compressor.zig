@@ -61,6 +61,19 @@ pub const Compressor = struct {
 
     const Self = @This();
 
+    // Compression algorithm constants
+    const ZLIB_OVERHEAD_RATIO = 1000; // 1/1000th of input size for zlib overhead
+    const ZLIB_FIXED_OVERHEAD = 12; // Fixed zlib header/trailer overhead
+    const ZLIB_EXTRA_BYTES = 2; // Additional safety margin
+
+    // Size thresholds for compression decisions
+    const MIN_COMPRESSION_SIZE = 64; // Minimum bytes to consider compression
+    const MIN_ENTROPY_ESTIMATION_SIZE = 16; // Minimum bytes for entropy calculation
+    const COMPRESSIBILITY_THRESHOLD = 0.1; // Minimum compressibility ratio to compress
+
+    // Entropy calculation constants
+    const MAX_ENTROPY_BITS = 8.0; // Maximum possible entropy (8 bits per byte)
+
     pub fn init(allocator: Allocator, compression_type: CompressionType) Self {
         return Self{
             .compression_type = compression_type,
@@ -92,7 +105,7 @@ pub const Compressor = struct {
     pub fn maxCompressedSize(self: *const Self, src_size: usize) usize {
         return switch (self.compression_type) {
             .none => src_size,
-            .zlib => src_size + (src_size / 1000) + 12 + 2, // zlib overhead
+            .zlib => src_size + (src_size / ZLIB_OVERHEAD_RATIO) + ZLIB_FIXED_OVERHEAD + ZLIB_EXTRA_BYTES,
         };
     }
 
@@ -122,18 +135,18 @@ pub const Compressor = struct {
     /// Check if compression is beneficial for given data
     pub fn shouldCompress(self: *const Self, data: []const u8) bool {
         // Don't compress very small data
-        if (data.len < 64) return false;
+        if (data.len < MIN_COMPRESSION_SIZE) return false;
 
         // Don't compress if compression is disabled
         if (self.compression_type == .none) return false;
 
         // Check for highly repetitive data patterns that compress well
-        return self.estimateCompressibility(data) > 0.1;
+        return self.estimateCompressibility(data) > COMPRESSIBILITY_THRESHOLD;
     }
 
     /// Estimate compression ratio without actually compressing
     fn estimateCompressibility(self: *const Self, data: []const u8) f64 {
-        if (data.len < 16) return 0.0;
+        if (data.len < MIN_ENTROPY_ESTIMATION_SIZE) return 0.0;
 
         // No compression means no compressibility benefit
         if (self.compression_type == .none) return 0.0;
@@ -155,7 +168,7 @@ pub const Compressor = struct {
         }
 
         // Normalize entropy to 0-1 range where 1 is most compressible
-        var compressibility = @max(0.0, (8.0 - entropy) / 8.0);
+        var compressibility = @max(0.0, (MAX_ENTROPY_BITS - entropy) / MAX_ENTROPY_BITS);
 
         // Adjust based on compression algorithm characteristics
         compressibility *= switch (self.compression_type) {
