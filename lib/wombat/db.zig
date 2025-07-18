@@ -296,7 +296,7 @@ pub const DB = struct {
             .compaction_pool = ArrayList(std.Thread).init(allocator),
             .compaction_jobs = try Channel(CompactionJob).init(allocator, 64),
             .compaction_picker = CompactionPicker.init(allocator, &options) catch |err| {
-                std.debug.print("Error initializing CompactionPicker: {any}\n", .{err});
+                std.log.err("Failed to initialize CompactionPicker: {}", .{err});
                 return err;
             },
             .worker_stats = WorkerStats.init(),
