@@ -250,10 +250,10 @@ pub const DB = struct {
         errdefer levels.deinit();
 
         // Initialize channels
-        var write_channel = try Channel(WriteRequest).init(allocator, 1000);
+        var write_channel = try Channel(WriteRequest).init(allocator, options.io_config.write_channel_size);
         errdefer write_channel.deinit();
 
-        var batch_channel = try Channel(BatchRequest).init(allocator, 100);
+        var batch_channel = try Channel(BatchRequest).init(allocator, options.io_config.batch_channel_size);
         errdefer batch_channel.deinit();
 
         // Initialize database structure
@@ -294,7 +294,7 @@ pub const DB = struct {
 
             // Enhanced worker management
             .compaction_pool = ArrayList(std.Thread).init(allocator),
-            .compaction_jobs = try Channel(CompactionJob).init(allocator, 64),
+            .compaction_jobs = try Channel(CompactionJob).init(allocator, options.io_config.compaction_jobs_channel_size),
             .compaction_picker = CompactionPicker.init(allocator, &options) catch |err| {
                 std.log.err("Failed to initialize CompactionPicker: {}", .{err});
                 return err;
@@ -1201,7 +1201,7 @@ pub const DB = struct {
             } else |_| {}
 
             // Handle individual write requests
-            if (self.write_channel.receiveTimeout(1000000)) |req| { // 1ms timeout
+            if (self.write_channel.receiveTimeout(self.options.io_config.channel_timeout_us)) |req| {
                 self.handleWrite(req);
             } else |err| switch (err) {
                 ChannelError.ReceiveTimeout => continue,
@@ -1269,7 +1269,7 @@ pub const DB = struct {
 
                 // Log space reclamation performance
                 const duration = @as(u64, @intCast(end_time - start_time));
-                if (duration > 1000) { // Log if reclamation took more than 1 second
+                if (duration > self.options.io_config.space_reclaim_timeout_ms) { // Log if reclamation took too long
                     std.log.info("VLog space reclamation completed: {any} in {any} ms", .{ space_reclaimed, duration });
                 }
             }
@@ -1326,7 +1326,7 @@ pub const DB = struct {
     fn enhancedCompactionWorker(self: *Self, worker_id: u32) void {
         while (!self.close_signal.load(.acquire)) {
             // Try to receive a compaction job with timeout
-            if (self.compaction_jobs.receiveTimeout(1000000)) |job| { // 1ms timeout
+            if (self.compaction_jobs.receiveTimeout(self.options.io_config.channel_timeout_us)) |job| {
                 self.worker_stats.incrementActiveWorkers();
                 defer self.worker_stats.decrementActiveWorkers();
 
@@ -1345,7 +1345,7 @@ pub const DB = struct {
                 self.worker_stats.recordCompactionJob(bytes_processed, duration);
 
                 // Log performance for monitoring
-                if (duration > 5000) { // Log slow compactions (>5s)
+                if (duration > self.options.io_config.slow_compaction_threshold_ms) { // Log slow compactions
                     std.log.warn("Slow compaction on worker {}: level {} took {} ms", .{ worker_id, job.level, duration });
                 }
             } else |err| switch (err) {
@@ -1413,7 +1413,7 @@ pub const DB = struct {
 
             // Process individual writes if no batch was available
             if (!batch_processed) {
-                if (self.write_channel.receiveTimeout(1000000)) |req| { // 1ms timeout
+                if (self.write_channel.receiveTimeout(self.options.io_config.channel_timeout_us)) |req| {
                     self.handleWrite(req);
                 } else |err| switch (err) {
                     ChannelError.ReceiveTimeout => {

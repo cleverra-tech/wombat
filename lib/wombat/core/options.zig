@@ -63,6 +63,16 @@ pub const IOConfig = struct {
     use_mmap: bool = true,
     mmap_populate: bool = false,
     direct_io: bool = false,
+
+    // Channel sizes for worker communication
+    write_channel_size: u32 = 1000,
+    batch_channel_size: u32 = 100,
+    compaction_jobs_channel_size: u32 = 64,
+
+    // Timeout values in microseconds
+    channel_timeout_us: u64 = 1000, // 1ms
+    space_reclaim_timeout_ms: u64 = 1000, // 1s
+    slow_compaction_threshold_ms: u64 = 5000, // 5s
 };
 
 /// Configuration for caching
@@ -243,6 +253,9 @@ pub const Options = struct {
         if (self.io_config.read_ahead_size == 0) return error.InvalidReadAheadSize;
         if (self.io_config.write_buffer_size == 0) return error.InvalidWriteBufferSize;
         if (self.io_config.sync_frequency_ms == 0) return error.InvalidSyncFrequency;
+        if (self.io_config.write_channel_size == 0) return error.InvalidWriteChannelSize;
+        if (self.io_config.batch_channel_size == 0) return error.InvalidBatchChannelSize;
+        if (self.io_config.compaction_jobs_channel_size == 0) return error.InvalidCompactionJobsChannelSize;
 
         // Validate cache config
         if (self.cache_config.block_cache_size == 0) return error.InvalidBlockCacheSize;
