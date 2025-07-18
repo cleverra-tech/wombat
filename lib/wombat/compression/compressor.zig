@@ -133,8 +133,10 @@ pub const Compressor = struct {
 
     /// Estimate compression ratio without actually compressing
     fn estimateCompressibility(self: *const Self, data: []const u8) f64 {
-        _ = self;
         if (data.len < 16) return 0.0;
+
+        // No compression means no compressibility benefit
+        if (self.compression_type == .none) return 0.0;
 
         // Simple entropy estimation
         var byte_counts = [_]u32{0} ** 256;
@@ -153,7 +155,15 @@ pub const Compressor = struct {
         }
 
         // Normalize entropy to 0-1 range where 1 is most compressible
-        return @max(0.0, (8.0 - entropy) / 8.0);
+        var compressibility = @max(0.0, (8.0 - entropy) / 8.0);
+
+        // Adjust based on compression algorithm characteristics
+        compressibility *= switch (self.compression_type) {
+            .none => 0.0, // No compression
+            .zlib => 1.0, // Full entropy-based estimation for zlib
+        };
+
+        return compressibility;
     }
 
     /// No compression - just copy data
