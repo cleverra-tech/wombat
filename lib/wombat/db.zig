@@ -114,6 +114,7 @@ pub const CompactionThrottleConfig = struct {
     adaptive_throttling: bool,
     priority_boost_threshold: f64,
     max_pending_jobs: u32,
+    base_delay_ms: u64,
 
     const Self = @This();
 
@@ -125,6 +126,7 @@ pub const CompactionThrottleConfig = struct {
             .adaptive_throttling = true,
             .priority_boost_threshold = 0.8,
             .max_pending_jobs = 32,
+            .base_delay_ms = 10, // Default base delay for compaction throttling
         };
     }
 
@@ -137,9 +139,8 @@ pub const CompactionThrottleConfig = struct {
             return 0;
         }
 
-        const base_delay_ms = 10;
         const priority_factor: f64 = if (job_priority > self.priority_boost_threshold) 0.5 else 1.0;
-        return @intFromFloat(@as(f64, @floatFromInt(base_delay_ms)) * priority_factor);
+        return @intFromFloat(@as(f64, @floatFromInt(self.base_delay_ms)) * priority_factor);
     }
 };
 
