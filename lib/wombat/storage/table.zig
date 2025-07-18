@@ -205,6 +205,326 @@ pub const BlockIndex = struct {
             }
         }
     }
+
+    pub fn serializedSize(self: *const BlockIndex) usize {
+        var size: usize = 4; // block count
+
+        for (self.blocks.items) |block| {
+            size += 4; // first_key length
+            size += block.first_key.len; // first_key data
+            size += 4; // last_key length
+            size += block.last_key.len; // last_key data
+            size += 8; // offset
+            size += 4; // size
+            size += 4; // entry_count
+            size += 4; // checksum
+            size += 1; // compression type
+            size += 8; // max_timestamp
+            size += 8; // min_timestamp
+        }
+
+        // Level1 index
+        if (self.level1_index) |level1| {
+            size += 1; // has_level1_index flag
+            size += 4; // level1 count
+            for (level1.items) |entry| {
+                size += 4; // key length
+                size += entry.key.len; // key data
+                size += 4; // block_index
+                size += 8; // offset
+            }
+        } else {
+            size += 1; // has_level1_index flag = false
+        }
+
+        // Sparse index
+        if (self.sparse_index) |sparse| {
+            size += 1; // has_sparse_index flag
+            size += 4; // sparse count
+            for (sparse.items) |entry| {
+                size += 4; // key length
+                size += entry.key.len; // key data
+                size += 4; // level1_index
+                size += 4; // block_count
+            }
+        } else {
+            size += 1; // has_sparse_index flag = false
+        }
+
+        return size;
+    }
+
+    pub fn serialize(self: *const BlockIndex, buf: []u8) !usize {
+        if (buf.len < self.serializedSize()) {
+            return error.BufferTooSmall;
+        }
+
+        var offset: usize = 0;
+
+        // Write block count
+        std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(self.blocks.items.len), .little);
+        offset += 4;
+
+        // Write blocks
+        for (self.blocks.items) |block| {
+            // Write first_key
+            std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(block.first_key.len), .little);
+            offset += 4;
+            @memcpy(buf[offset .. offset + block.first_key.len], block.first_key);
+            offset += block.first_key.len;
+
+            // Write last_key
+            std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(block.last_key.len), .little);
+            offset += 4;
+            @memcpy(buf[offset .. offset + block.last_key.len], block.last_key);
+            offset += block.last_key.len;
+
+            // Write block metadata
+            std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], block.offset, .little);
+            offset += 8;
+            std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], block.size, .little);
+            offset += 4;
+            std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], block.entry_count, .little);
+            offset += 4;
+            std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], block.checksum, .little);
+            offset += 4;
+            buf[offset] = @intFromEnum(block.compression);
+            offset += 1;
+            std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], block.max_timestamp, .little);
+            offset += 8;
+            std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], block.min_timestamp, .little);
+            offset += 8;
+        }
+
+        // Write level1 index
+        if (self.level1_index) |level1| {
+            buf[offset] = 1; // has_level1_index = true
+            offset += 1;
+
+            std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(level1.items.len), .little);
+            offset += 4;
+
+            for (level1.items) |entry| {
+                std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(entry.key.len), .little);
+                offset += 4;
+                @memcpy(buf[offset .. offset + entry.key.len], entry.key);
+                offset += entry.key.len;
+
+                std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], entry.block_index, .little);
+                offset += 4;
+                std.mem.writeInt(u64, buf[offset .. offset + 8][0..8], entry.offset, .little);
+                offset += 8;
+            }
+        } else {
+            buf[offset] = 0; // has_level1_index = false
+            offset += 1;
+        }
+
+        // Write sparse index
+        if (self.sparse_index) |sparse| {
+            buf[offset] = 1; // has_sparse_index = true
+            offset += 1;
+
+            std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(sparse.items.len), .little);
+            offset += 4;
+
+            for (sparse.items) |entry| {
+                std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], @intCast(entry.key.len), .little);
+                offset += 4;
+                @memcpy(buf[offset .. offset + entry.key.len], entry.key);
+                offset += entry.key.len;
+
+                std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], entry.level1_index, .little);
+                offset += 4;
+                std.mem.writeInt(u32, buf[offset .. offset + 4][0..4], entry.block_count, .little);
+                offset += 4;
+            }
+        } else {
+            buf[offset] = 0; // has_sparse_index = false
+            offset += 1;
+        }
+
+        return offset;
+    }
+
+    pub fn deserialize(buf: []const u8, allocator: Allocator) !BlockIndex {
+        if (buf.len < 5) {
+            return error.BufferTooSmall;
+        }
+
+        var offset: usize = 0;
+        var block_index = BlockIndex.init(allocator);
+
+        // Read block count
+        const block_count = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+        offset += 4;
+
+        // Read blocks
+        for (0..block_count) |_| {
+            if (offset + 4 > buf.len) {
+                block_index.deinit();
+                return error.BufferTooSmall;
+            }
+
+            // Read first_key
+            const first_key_len = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+            offset += 4;
+
+            if (offset + first_key_len > buf.len) {
+                block_index.deinit();
+                return error.BufferTooSmall;
+            }
+
+            const first_key = try allocator.dupe(u8, buf[offset .. offset + first_key_len]);
+            offset += first_key_len;
+
+            // Read last_key
+            const last_key_len = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+            offset += 4;
+
+            if (offset + last_key_len > buf.len) {
+                allocator.free(first_key);
+                block_index.deinit();
+                return error.BufferTooSmall;
+            }
+
+            const last_key = try allocator.dupe(u8, buf[offset .. offset + last_key_len]);
+            offset += last_key_len;
+
+            // Read block metadata
+            if (offset + 41 > buf.len) { // 8+4+4+4+1+8+8 = 37 bytes + 4 for safety
+                allocator.free(first_key);
+                allocator.free(last_key);
+                block_index.deinit();
+                return error.BufferTooSmall;
+            }
+
+            const block_offset = std.mem.readInt(u64, buf[offset .. offset + 8][0..8], .little);
+            offset += 8;
+            const size = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+            offset += 4;
+            const entry_count = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+            offset += 4;
+            const checksum = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+            offset += 4;
+            const compression = @as(CompressionType, @enumFromInt(buf[offset]));
+            offset += 1;
+            const max_timestamp = std.mem.readInt(u64, buf[offset .. offset + 8][0..8], .little);
+            offset += 8;
+            const min_timestamp = std.mem.readInt(u64, buf[offset .. offset + 8][0..8], .little);
+            offset += 8;
+
+            const block = BlockInfo{
+                .first_key = first_key,
+                .last_key = last_key,
+                .offset = block_offset,
+                .size = size,
+                .entry_count = entry_count,
+                .checksum = checksum,
+                .compression = compression,
+                .max_timestamp = max_timestamp,
+                .min_timestamp = min_timestamp,
+            };
+
+            try block_index.blocks.append(block);
+        }
+
+        // Read level1 index
+        if (offset >= buf.len) {
+            block_index.deinit();
+            return error.BufferTooSmall;
+        }
+
+        const has_level1_index = buf[offset] != 0;
+        offset += 1;
+
+        if (has_level1_index) {
+            const level1_count = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+            offset += 4;
+
+            block_index.level1_index = ArrayList(Level1Entry).init(allocator);
+
+            for (0..level1_count) |_| {
+                if (offset + 4 > buf.len) {
+                    block_index.deinit();
+                    return error.BufferTooSmall;
+                }
+
+                const key_len = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+                offset += 4;
+
+                if (offset + key_len + 12 > buf.len) { // key + block_index + offset
+                    block_index.deinit();
+                    return error.BufferTooSmall;
+                }
+
+                const key = try allocator.dupe(u8, buf[offset .. offset + key_len]);
+                offset += key_len;
+
+                const block_idx = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+                offset += 4;
+                const entry_offset = std.mem.readInt(u64, buf[offset .. offset + 8][0..8], .little);
+                offset += 8;
+
+                const entry = Level1Entry{
+                    .key = key,
+                    .block_index = block_idx,
+                    .offset = entry_offset,
+                };
+
+                try block_index.level1_index.?.append(entry);
+            }
+        }
+
+        // Read sparse index
+        if (offset >= buf.len) {
+            block_index.deinit();
+            return error.BufferTooSmall;
+        }
+
+        const has_sparse_index = buf[offset] != 0;
+        offset += 1;
+
+        if (has_sparse_index) {
+            const sparse_count = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+            offset += 4;
+
+            block_index.sparse_index = ArrayList(SparseEntry).init(allocator);
+
+            for (0..sparse_count) |_| {
+                if (offset + 4 > buf.len) {
+                    block_index.deinit();
+                    return error.BufferTooSmall;
+                }
+
+                const key_len = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+                offset += 4;
+
+                if (offset + key_len + 8 > buf.len) { // key + level1_index + block_count
+                    block_index.deinit();
+                    return error.BufferTooSmall;
+                }
+
+                const key = try allocator.dupe(u8, buf[offset .. offset + key_len]);
+                offset += key_len;
+
+                const level1_idx = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+                offset += 4;
+                const block_cnt = std.mem.readInt(u32, buf[offset .. offset + 4][0..4], .little);
+                offset += 4;
+
+                const entry = SparseEntry{
+                    .key = key,
+                    .level1_index = level1_idx,
+                    .block_count = block_cnt,
+                };
+
+                try block_index.sparse_index.?.append(entry);
+            }
+        }
+
+        return block_index;
+    }
 };
 
 /// Enhanced filter index for bloom filter partitioning
@@ -1109,10 +1429,25 @@ pub const Table = struct {
 
         // Load block index
         const block_index_size = index_offset - block_index_offset;
-        const block_index = BlockIndex.init(allocator);
+        var block_index = BlockIndex.init(allocator);
         if (block_index_size > 0) {
-            // Load block index data (implementation depends on serialization format)
-            // For now, initialize empty
+            const block_index_data = mmap_file.getSliceConst(block_index_offset, block_index_size) catch {
+                var mutable_mmap = mmap_file;
+                mutable_mmap.close();
+                return TableError.CorruptedData;
+            };
+
+            if (BlockIndex.deserialize(block_index_data, allocator)) |deserialized| {
+                block_index.deinit();
+                block_index = deserialized;
+            } else |err| {
+                // If deserialization fails, use empty block index for compatibility
+                if (err != error.BufferTooSmall) {
+                    var mutable_mmap = mmap_file;
+                    mutable_mmap.close();
+                    return TableError.CorruptedData;
+                }
+            }
         }
 
         // Initialize enhanced table
@@ -1964,10 +2299,20 @@ pub const TableBuilder = struct {
             return TableError.IOError;
         }
 
-        // Write block index (simplified placeholder)
+        // Serialize and write block index
         const block_index_offset = self.file.getPos() catch return TableError.IOError;
-        const block_index_placeholder = [_]u8{0} ** 64; // Placeholder for block index
-        self.file.writeAll(&block_index_placeholder) catch return TableError.IOError;
+        const block_index_data = self.allocator.alloc(u8, self.block_index.serializedSize()) catch return TableError.OutOfMemory;
+        defer self.allocator.free(block_index_data);
+
+        const block_index_bytes = self.block_index.serialize(block_index_data) catch return TableError.IOError;
+        if (block_index_bytes != block_index_data.len) {
+            return TableError.IOError;
+        }
+
+        const block_index_written = self.file.write(block_index_data) catch return TableError.IOError;
+        if (block_index_written != block_index_data.len) {
+            return TableError.IOError;
+        }
 
         // Write main index
         const index_offset = self.file.getPos() catch return TableError.IOError;
