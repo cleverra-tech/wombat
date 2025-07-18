@@ -371,8 +371,19 @@ pub const ManifestFile = struct {
     }
 };
 
+/// Test table configuration for createTestTableInfo
+pub const TestTableConfig = struct {
+    size: u64 = 1024 * 1024, // Default 1MB
+    key_count: u64 = 1000, // Default 1000 keys
+};
+
 /// Create a test TableInfo for testing purposes
 pub fn createTestTableInfo(allocator: Allocator, id: u64, level: u32) !TableInfo {
+    return createTestTableInfoWithConfig(allocator, id, level, TestTableConfig{});
+}
+
+/// Create a test TableInfo with configurable parameters
+pub fn createTestTableInfoWithConfig(allocator: Allocator, id: u64, level: u32, config: TestTableConfig) !TableInfo {
     const path = try std.fmt.allocPrint(allocator, "table_{d}.sst", .{id});
     const smallest = try allocator.dupe(u8, "aaa");
     const largest = try allocator.dupe(u8, "zzz");
@@ -380,7 +391,7 @@ pub fn createTestTableInfo(allocator: Allocator, id: u64, level: u32) !TableInfo
     // Calculate checksum based on table characteristics for test consistency
     // Buffer sized to handle: "id" + 20 digits + "lv" + 10 digits + "sz" + 7 digits + "kc" + 4 digits = 49 chars max
     var checksum_data: [64]u8 = undefined;
-    const written = std.fmt.bufPrint(&checksum_data, "id{d}lv{d}sz{d}kc{d}", .{ id, level, 1024 * 1024, 1000 }) catch |err| switch (err) {
+    const written = std.fmt.bufPrint(&checksum_data, "id{d}lv{d}sz{d}kc{d}", .{ id, level, config.size, config.key_count }) catch |err| switch (err) {
         error.NoSpaceLeft => unreachable, // Buffer is properly sized
     };
     const checksum = std.hash.crc.Crc32.hash(written);
@@ -391,8 +402,8 @@ pub fn createTestTableInfo(allocator: Allocator, id: u64, level: u32) !TableInfo
         .level = level,
         .smallest_key = smallest,
         .largest_key = largest,
-        .size = 1024 * 1024, // 1MB
-        .key_count = 1000,
+        .size = config.size,
+        .key_count = config.key_count,
         .created_at = @intCast(std.time.timestamp()),
         .checksum = checksum,
     };
