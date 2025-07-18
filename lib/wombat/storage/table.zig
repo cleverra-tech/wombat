@@ -1964,7 +1964,7 @@ pub const TableBuilder = struct {
     pub fn init(allocator: Allocator, path: []const u8, options: Options, level: u32) TableError!Self {
         const file = std.fs.cwd().createFile(path, .{ .read = true, .truncate = true }) catch return TableError.IOError;
 
-        const bloom_filter = BloomFilter.init(allocator, 10000, options.bloom_false_positive) catch {
+        const bloom_filter = BloomFilter.init(allocator, @as(usize, options.bloom_expected_items), options.bloom_false_positive) catch {
             file.close();
             return TableError.OutOfMemory;
         };
