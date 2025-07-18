@@ -2401,6 +2401,13 @@ pub const TableBuilder = struct {
     }
 };
 
+/// Generate a temporary test file path with unique suffix
+fn generateTestFilePath(allocator: Allocator, comptime base_name: []const u8, comptime extension: []const u8) ![]const u8 {
+    const timestamp = std.time.milliTimestamp();
+    const random_suffix = std.crypto.random.int(u32);
+    return std.fmt.allocPrint(allocator, "{s}_{d}_{d}.{s}", .{ base_name, timestamp, random_suffix, extension });
+}
+
 // Tests
 test "TableIndex basic operations" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -2603,7 +2610,8 @@ test "TableBuilder basic functionality" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const test_path = "test_table.sst";
+    const test_path = try generateTestFilePath(allocator, "test_table", "sst");
+    defer allocator.free(test_path);
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
     const options = Options{
@@ -2648,7 +2656,8 @@ test "TableBuilder key ordering validation" {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const test_path = "test_table_order.sst";
+    const test_path = try generateTestFilePath(allocator, "test_table_order", "sst");
+    defer allocator.free(test_path);
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
     const options = Options{

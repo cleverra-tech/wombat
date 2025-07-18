@@ -675,6 +675,13 @@ pub const ValueLog = struct {
     }
 };
 
+/// Generate a temporary test file path with unique suffix
+fn generateTestFilePath(allocator: Allocator, comptime base_name: []const u8, comptime extension: []const u8) ![]const u8 {
+    const timestamp = std.time.milliTimestamp();
+    const random_suffix = std.crypto.random.int(u32);
+    return std.fmt.allocPrint(allocator, "{s}_{d}_{d}.{s}", .{ base_name, timestamp, random_suffix, extension });
+}
+
 /// Calculate checksum for integrity verification
 fn calculateChecksum(data: []const u8) u64 {
     // Simple FNV-1a hash for checksum
@@ -737,7 +744,8 @@ test "DiscardStats operations" {
 test "VLogFile basic operations" {
     const allocator = std.testing.allocator;
 
-    const temp_path = "test_vlog_file.dat";
+    const temp_path = try generateTestFilePath(allocator, "test_vlog_file", "dat");
+    defer allocator.free(temp_path);
     defer fs.cwd().deleteFile(temp_path) catch {};
 
     const file = try VLogFile.create(allocator, 1, temp_path, 1024 * 1024, .none);

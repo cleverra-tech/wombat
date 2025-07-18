@@ -1,4 +1,5 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 // Core modules
 pub const Arena = @import("wombat/memory/arena.zig").Arena;
@@ -298,12 +299,20 @@ test "Channel integration with database operations" {
     std.testing.expect(stats.receives_total == 1) catch unreachable;
 }
 
+/// Generate a temporary test file path with unique suffix
+fn generateTestFilePath(allocator: Allocator, comptime base_name: []const u8, comptime extension: []const u8) ![]const u8 {
+    const timestamp = std.time.milliTimestamp();
+    const random_suffix = std.crypto.random.int(u32);
+    return std.fmt.allocPrint(allocator, "{s}_{d}_{d}.{s}", .{ base_name, timestamp, random_suffix, extension });
+}
+
 test "TableBuilder integration with SSTable format" {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const test_path = "test_integration.sst";
+    const test_path = try generateTestFilePath(allocator, "test_integration", "sst");
+    defer allocator.free(test_path);
     defer std.fs.cwd().deleteFile(test_path) catch {};
 
     const db_options = Options{

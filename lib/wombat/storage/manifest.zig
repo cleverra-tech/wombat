@@ -412,12 +412,20 @@ pub fn createTestTableInfoWithConfig(allocator: Allocator, id: u64, level: u32, 
     };
 }
 
+/// Generate a temporary test file path with unique suffix
+fn generateTestFilePath(allocator: Allocator, comptime base_name: []const u8, comptime extension: []const u8) ![]const u8 {
+    const timestamp = std.time.milliTimestamp();
+    const random_suffix = std.crypto.random.int(u32);
+    return std.fmt.allocPrint(allocator, "{s}_{d}_{d}.{s}", .{ base_name, timestamp, random_suffix, extension });
+}
+
 // Tests
 test "ManifestFile basic operations" {
     const allocator = std.testing.allocator;
 
-    // Use temporary file
-    const temp_path = "test_manifest.json";
+    // Use temporary file with unique name
+    const temp_path = try generateTestFilePath(allocator, "test_manifest", "json");
+    defer allocator.free(temp_path);
     defer fs.cwd().deleteFile(temp_path) catch {};
 
     const manifest = try ManifestFile.init(allocator, temp_path);
@@ -465,7 +473,8 @@ test "ManifestFile basic operations" {
 test "ManifestFile persistence and recovery" {
     const allocator = std.testing.allocator;
 
-    const temp_path = "test_manifest_persist.json";
+    const temp_path = try generateTestFilePath(allocator, "test_manifest_persist", "json");
+    defer allocator.free(temp_path);
     defer fs.cwd().deleteFile(temp_path) catch {};
 
     // Create manifest and add some tables
