@@ -310,18 +310,25 @@ pub const Oracle = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // Check for read-write conflicts: if any committed transaction
-        // with commit_ts > txn.read_ts wrote to keys that txn read
-        for (self.committed_txns.items) |committed| {
-            // Only check transactions that committed after this transaction's read timestamp
-            if (committed.commit_ts <= txn.read_ts) {
-                continue;
-            }
+        // Optimize by iterating through reads first (typically smaller set)
+        // For each key that this transaction read, check if any committed transaction
+        // with commit_ts > txn.read_ts wrote to that key
+        var reads_iter = txn.reads.iterator();
+        while (reads_iter.next()) |read_entry| {
+            const read_key = read_entry.key_ptr.*;
 
-            // Check if any of the committed transaction's writes conflict with our reads
-            for (committed.conflict_keys) |conflict_key| {
-                if (txn.reads.contains(conflict_key)) {
-                    return true;
+            // Check all committed transactions for conflicts with this specific read
+            for (self.committed_txns.items) |committed| {
+                // Only check transactions that committed after this transaction's read timestamp
+                if (committed.commit_ts <= txn.read_ts) {
+                    continue;
+                }
+
+                // Check if this committed transaction wrote to the key we read
+                for (committed.conflict_keys) |conflict_key| {
+                    if (conflict_key == read_key) {
+                        return true;
+                    }
                 }
             }
         }
