@@ -392,10 +392,13 @@ pub fn createTestTableInfoWithConfig(allocator: Allocator, id: u64, level: u32, 
     const largest = try allocator.dupe(u8, "zzz");
 
     // Calculate checksum based on table characteristics for test consistency
-    // Buffer sized to handle: "id" + 20 digits + "lv" + 10 digits + "sz" + 7 digits + "kc" + 4 digits = 49 chars max
-    var checksum_data: [64]u8 = undefined;
+    // Buffer sized to handle worst case: "id" + 20 digits + "lv" + 10 digits + "sz" + 20 digits + "kc" + 20 digits = 78 chars max
+    var checksum_data: [128]u8 = undefined;
     const written = std.fmt.bufPrint(&checksum_data, "id{d}lv{d}sz{d}kc{d}", .{ id, level, config.size, config.key_count }) catch |err| switch (err) {
-        error.NoSpaceLeft => unreachable, // Buffer is properly sized
+        error.NoSpaceLeft => {
+            std.log.err("Checksum buffer overflow in createTestTableInfoWithConfig: id={}, level={}, size={}, key_count={}", .{ id, level, config.size, config.key_count });
+            return error.OutOfMemory;
+        },
     };
     const checksum = std.hash.crc.Crc32.hash(written);
 
