@@ -171,6 +171,9 @@ pub const RecoveryConfig = struct {
     manifest_rewrite_threshold: u32 = DEFAULT_MANIFEST_REWRITE_THRESHOLD,
     crash_recovery_timeout_ms: u32 = DEFAULT_CRASH_RECOVERY_TIMEOUT_MS,
     backup_retention_days: u32 = 7,
+    // File naming patterns
+    wal_file_prefix: []const u8 = "wal_",
+    wal_file_suffix: []const u8 = ".log",
 };
 
 /// Configuration for encryption
@@ -222,6 +225,9 @@ pub const Options = struct {
     value_log_file_size: usize = DEFAULT_VALUE_LOG_FILE_SIZE,
     value_log_space_reclaim_threshold: f64 = 0.7,
     value_log_max_entries: u32 = DEFAULT_VALUE_LOG_MAX_ENTRIES,
+    // Value log file naming patterns
+    value_log_file_prefix: []const u8 = "vlog_",
+    value_log_file_suffix: []const u8 = ".vlog",
 
     // Performance settings
     block_size: usize = DEFAULT_BLOCK_SIZE,

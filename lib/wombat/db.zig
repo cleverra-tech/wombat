@@ -436,8 +436,10 @@ pub const DB = struct {
         while (iterator.next() catch null) |entry| {
             if (entry.kind != .file) continue;
 
-            // Check if it's a WAL file (pattern: wal_*.log)
-            if (!std.mem.startsWith(u8, entry.name, "wal_") or !std.mem.endsWith(u8, entry.name, ".log")) {
+            // Check if it's a WAL file using configurable pattern
+            if (!std.mem.startsWith(u8, entry.name, self.options.recovery_config.wal_file_prefix) or
+                !std.mem.endsWith(u8, entry.name, self.options.recovery_config.wal_file_suffix))
+            {
                 continue;
             }
 
@@ -576,10 +578,14 @@ pub const DB = struct {
             while (vlog_iterator.next() catch null) |entry| {
                 if (entry.kind != .file) continue;
 
-                // Check for orphaned value log files
-                if (std.mem.startsWith(u8, entry.name, "vlog_") and std.mem.endsWith(u8, entry.name, ".vlog")) {
+                // Check for orphaned value log files using configurable pattern
+                if (std.mem.startsWith(u8, entry.name, self.options.value_log_file_prefix) and
+                    std.mem.endsWith(u8, entry.name, self.options.value_log_file_suffix))
+                {
                     // Parse file ID from filename
-                    const id_str = entry.name[5 .. entry.name.len - 5]; // Remove "vlog_" and ".vlog"
+                    const prefix_len = self.options.value_log_file_prefix.len;
+                    const suffix_len = self.options.value_log_file_suffix.len;
+                    const id_str = entry.name[prefix_len .. entry.name.len - suffix_len];
                     const file_id = std.fmt.parseInt(u32, id_str, 10) catch continue;
 
                     // Check if this file is still referenced
@@ -1006,7 +1012,7 @@ pub const DB = struct {
     fn createMemTable(self: *Self) !*MemTable {
         const memtable_id = self.next_memtable_id.fetchAdd(1, .acq_rel);
 
-        const wal_path = try std.fmt.allocPrint(self.allocator, "{s}/wal_{d}.log", .{ self.options.dir, memtable_id });
+        const wal_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}{d}{s}", .{ self.options.dir, self.options.recovery_config.wal_file_prefix, memtable_id, self.options.recovery_config.wal_file_suffix });
         defer self.allocator.free(wal_path);
 
         const memtable = try self.allocator.create(MemTable);
