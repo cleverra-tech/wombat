@@ -1,5 +1,71 @@
 const std = @import("std");
 
+// Memory size constants
+pub const KB = 1024;
+pub const MB = 1024 * KB;
+pub const GB = 1024 * MB;
+
+// Default memory sizes
+pub const DEFAULT_BLOCK_SIZE = 4 * KB;
+pub const DEFAULT_READ_AHEAD_SIZE = 64 * KB;
+pub const DEFAULT_WRITE_BUFFER_SIZE = 1 * MB;
+pub const DEFAULT_MEM_TABLE_SIZE = 64 * MB;
+pub const DEFAULT_BASE_TABLE_SIZE = 2 * MB;
+pub const DEFAULT_WAL_FILE_SIZE = 64 * MB;
+pub const DEFAULT_VALUE_LOG_FILE_SIZE = 1 * GB;
+pub const DEFAULT_MAX_FILE_SIZE = 2 * GB;
+
+// Cache size defaults
+pub const DEFAULT_BLOCK_CACHE_SIZE = 256 * MB;
+pub const DEFAULT_TABLE_CACHE_SIZE = 64 * MB;
+pub const DEFAULT_FILTER_CACHE_SIZE = 32 * MB;
+
+// Timeout constants (in milliseconds)
+pub const DEFAULT_TXN_TIMEOUT_MS = 30000; // 30 seconds
+pub const DEFAULT_SYNC_FREQUENCY_MS = 1000; // 1 second
+pub const DEFAULT_CHECKPOINT_INTERVAL_MS = 300000; // 5 minutes
+pub const DEFAULT_CRASH_RECOVERY_TIMEOUT_MS = 30000; // 30 seconds
+pub const DEFAULT_CIRCUIT_BREAKER_TIMEOUT_MS = 60000; // 1 minute
+pub const DEFAULT_SLOW_QUERY_THRESHOLD_MS = 1000; // 1 second
+pub const DEFAULT_SLOW_COMPACTION_THRESHOLD_MS = 5000; // 5 seconds
+pub const DEFAULT_METRICS_INTERVAL_MS = 10000; // 10 seconds
+
+// Throughput limits
+pub const DEFAULT_COMPACTION_THROTTLE_BPS = 10 * MB; // 10MB/s
+pub const DEFAULT_WRITE_THROTTLE_BPS = 50 * MB; // 50MB/s
+
+// Count limits
+pub const DEFAULT_MAX_READ_KEYS = 10000;
+pub const DEFAULT_MAX_WRITE_KEYS = 1000;
+pub const DEFAULT_MAX_PENDING_WRITES = 1000;
+pub const DEFAULT_MAX_BATCH_SIZE = 1000;
+pub const DEFAULT_MAX_OPEN_FILES = 1000;
+pub const DEFAULT_MAX_ERROR_HISTORY = 1000;
+pub const DEFAULT_WRITE_CHANNEL_SIZE = 1000;
+pub const DEFAULT_BLOOM_EXPECTED_ITEMS = 10000;
+pub const DEFAULT_MANIFEST_REWRITE_THRESHOLD = 1000;
+pub const DEFAULT_VALUE_LOG_MAX_ENTRIES = 1000000;
+
+// Size validation limits
+pub const DEFAULT_MAX_KEY_SIZE = 1 * MB;
+pub const DEFAULT_MAX_VALUE_SIZE = 1 * GB;
+pub const DEFAULT_MAX_BATCH_BYTES = 10 * MB;
+pub const DEFAULT_VALUE_THRESHOLD = 1 * MB;
+
+// Retry configuration
+pub const DEFAULT_MAX_RETRIES = 3;
+pub const DEFAULT_INITIAL_DELAY_MS = 100;
+pub const DEFAULT_MAX_DELAY_MS = 5000;
+pub const DEFAULT_BACKOFF_MULTIPLIER = 2.0;
+pub const DEFAULT_JITTER_RATIO = 0.1;
+
+// Encryption defaults
+pub const DEFAULT_KEY_DERIVATION_ITERATIONS = 10000;
+
+// Microsecond timeouts
+pub const DEFAULT_CHANNEL_TIMEOUT_US = 1000; // 1ms
+pub const DEFAULT_SPACE_RECLAIM_TIMEOUT_MS = 1000; // 1s
+
 pub const CompressionType = enum {
     none,
     zlib,
@@ -32,54 +98,54 @@ pub const LogLevel = enum {
 
 /// Configuration for transaction system
 pub const TransactionConfig = struct {
-    max_read_keys: u32 = 10000,
-    max_write_keys: u32 = 1000,
+    max_read_keys: u32 = DEFAULT_MAX_READ_KEYS,
+    max_write_keys: u32 = DEFAULT_MAX_WRITE_KEYS,
     detect_conflicts: bool = true,
     conflict_detection_mode: ConflictDetectionMode = .basic,
-    max_pending_writes: u32 = 1000,
+    max_pending_writes: u32 = DEFAULT_MAX_PENDING_WRITES,
     space_reclaim_watermark_ratio: f64 = 0.1,
-    txn_timeout_ms: u32 = 30000,
+    txn_timeout_ms: u32 = DEFAULT_TXN_TIMEOUT_MS,
 };
 
 /// Configuration for retry and error handling
 pub const RetryConfig = struct {
-    max_retries: u32 = 3,
-    initial_delay_ms: u32 = 100,
-    max_delay_ms: u32 = 5000,
-    backoff_multiplier: f64 = 2.0,
-    jitter_ratio: f64 = 0.1,
+    max_retries: u32 = DEFAULT_MAX_RETRIES,
+    initial_delay_ms: u32 = DEFAULT_INITIAL_DELAY_MS,
+    max_delay_ms: u32 = DEFAULT_MAX_DELAY_MS,
+    backoff_multiplier: f64 = DEFAULT_BACKOFF_MULTIPLIER,
+    jitter_ratio: f64 = DEFAULT_JITTER_RATIO,
     enable_circuit_breaker: bool = true,
     circuit_breaker_threshold: u32 = 10,
-    circuit_breaker_timeout_ms: u32 = 60000,
+    circuit_breaker_timeout_ms: u32 = DEFAULT_CIRCUIT_BREAKER_TIMEOUT_MS,
 };
 
 /// Configuration for I/O throttling and performance
 pub const IOConfig = struct {
-    compaction_throttle_bytes_per_sec: u64 = 10 * 1024 * 1024, // 10MB/s
-    write_throttle_bytes_per_sec: u64 = 50 * 1024 * 1024, // 50MB/s
-    read_ahead_size: usize = 64 * 1024, // 64KB
-    write_buffer_size: usize = 1024 * 1024, // 1MB
-    sync_frequency_ms: u32 = 1000,
+    compaction_throttle_bytes_per_sec: u64 = DEFAULT_COMPACTION_THROTTLE_BPS,
+    write_throttle_bytes_per_sec: u64 = DEFAULT_WRITE_THROTTLE_BPS,
+    read_ahead_size: usize = DEFAULT_READ_AHEAD_SIZE,
+    write_buffer_size: usize = DEFAULT_WRITE_BUFFER_SIZE,
+    sync_frequency_ms: u32 = DEFAULT_SYNC_FREQUENCY_MS,
     use_mmap: bool = true,
     mmap_populate: bool = false,
     direct_io: bool = false,
 
     // Channel sizes for worker communication
-    write_channel_size: u32 = 1000,
+    write_channel_size: u32 = DEFAULT_WRITE_CHANNEL_SIZE,
     batch_channel_size: u32 = 100,
     compaction_jobs_channel_size: u32 = 64,
 
     // Timeout values in microseconds
-    channel_timeout_us: u64 = 1000, // 1ms
-    space_reclaim_timeout_ms: u64 = 1000, // 1s
-    slow_compaction_threshold_ms: u64 = 5000, // 5s
+    channel_timeout_us: u64 = DEFAULT_CHANNEL_TIMEOUT_US,
+    space_reclaim_timeout_ms: u64 = DEFAULT_SPACE_RECLAIM_TIMEOUT_MS,
+    slow_compaction_threshold_ms: u64 = DEFAULT_SLOW_COMPACTION_THRESHOLD_MS,
 };
 
 /// Configuration for caching
 pub const CacheConfig = struct {
-    block_cache_size: usize = 256 * 1024 * 1024, // 256MB
-    table_cache_size: usize = 64 * 1024 * 1024, // 64MB
-    filter_cache_size: usize = 32 * 1024 * 1024, // 32MB
+    block_cache_size: usize = DEFAULT_BLOCK_CACHE_SIZE,
+    table_cache_size: usize = DEFAULT_TABLE_CACHE_SIZE,
+    filter_cache_size: usize = DEFAULT_FILTER_CACHE_SIZE,
     enable_cache_compression: bool = true,
     cache_eviction_policy: enum { lru, lfu, arc } = .lru,
     cache_shards: u32 = 16,
@@ -88,22 +154,22 @@ pub const CacheConfig = struct {
 /// Configuration for monitoring and metrics
 pub const MonitoringConfig = struct {
     enable_metrics: bool = true,
-    metrics_interval_ms: u32 = 10000,
-    max_error_history: u32 = 1000,
+    metrics_interval_ms: u32 = DEFAULT_METRICS_INTERVAL_MS,
+    max_error_history: u32 = DEFAULT_MAX_ERROR_HISTORY,
     log_level: LogLevel = .info,
     enable_slow_query_log: bool = true,
-    slow_query_threshold_ms: u32 = 1000,
+    slow_query_threshold_ms: u32 = DEFAULT_SLOW_QUERY_THRESHOLD_MS,
     enable_operation_tracing: bool = false,
 };
 
 /// Configuration for recovery and backup
 pub const RecoveryConfig = struct {
     enable_wal: bool = true,
-    wal_file_size: usize = 64 * 1024 * 1024, // 64MB
+    wal_file_size: usize = DEFAULT_WAL_FILE_SIZE,
     wal_sync_writes: bool = true,
-    checkpoint_interval_ms: u32 = 300000, // 5 minutes
-    manifest_rewrite_threshold: u32 = 1000,
-    crash_recovery_timeout_ms: u32 = 30000,
+    checkpoint_interval_ms: u32 = DEFAULT_CHECKPOINT_INTERVAL_MS,
+    manifest_rewrite_threshold: u32 = DEFAULT_MANIFEST_REWRITE_THRESHOLD,
+    crash_recovery_timeout_ms: u32 = DEFAULT_CRASH_RECOVERY_TIMEOUT_MS,
     backup_retention_days: u32 = 7,
 };
 
@@ -116,19 +182,19 @@ pub const EncryptionConfig = struct {
     compress_before_encrypt: bool = true,
 
     // Key derivation parameters
-    key_derivation_iterations: u32 = 10000,
+    key_derivation_iterations: u32 = DEFAULT_KEY_DERIVATION_ITERATIONS,
     salt_length: usize = 16,
     iv_length: usize = 12,
 };
 
 /// Configuration for validation limits
 pub const ValidationConfig = struct {
-    max_key_size: usize = 1024 * 1024, // 1MB
-    max_value_size: usize = 1024 * 1024 * 1024, // 1GB
-    max_batch_size: u32 = 1000,
-    max_batch_bytes: usize = 10 * 1024 * 1024, // 10MB
-    max_open_files: u32 = 1000,
-    max_file_size: usize = 2 * 1024 * 1024 * 1024, // 2GB
+    max_key_size: usize = DEFAULT_MAX_KEY_SIZE,
+    max_value_size: usize = DEFAULT_MAX_VALUE_SIZE,
+    max_batch_size: u32 = DEFAULT_MAX_BATCH_SIZE,
+    max_batch_bytes: usize = DEFAULT_MAX_BATCH_BYTES,
+    max_open_files: u32 = DEFAULT_MAX_OPEN_FILES,
+    max_file_size: usize = DEFAULT_MAX_FILE_SIZE,
 };
 
 pub const Options = struct {
@@ -137,11 +203,11 @@ pub const Options = struct {
     value_dir: []const u8,
 
     // Core LSM tree settings
-    mem_table_size: usize = 64 * 1024 * 1024,
+    mem_table_size: usize = DEFAULT_MEM_TABLE_SIZE,
     num_memtables: u32 = 5,
     max_levels: u32 = 7,
     level_size_multiplier: u32 = 10,
-    base_table_size: usize = 2 * 1024 * 1024,
+    base_table_size: usize = DEFAULT_BASE_TABLE_SIZE,
 
     // Compaction settings
     num_compactors: u32 = 4,
@@ -152,15 +218,15 @@ pub const Options = struct {
     compaction_delete_ratio: f64 = 0.5,
 
     // Value log settings
-    value_threshold: usize = 1024 * 1024,
-    value_log_file_size: usize = 1024 * 1024 * 1024,
+    value_threshold: usize = DEFAULT_VALUE_THRESHOLD,
+    value_log_file_size: usize = DEFAULT_VALUE_LOG_FILE_SIZE,
     value_log_space_reclaim_threshold: f64 = 0.7,
-    value_log_max_entries: u32 = 1000000,
+    value_log_max_entries: u32 = DEFAULT_VALUE_LOG_MAX_ENTRIES,
 
     // Performance settings
-    block_size: usize = 4 * 1024,
+    block_size: usize = DEFAULT_BLOCK_SIZE,
     bloom_false_positive: f64 = 0.01,
-    bloom_expected_items: u32 = 10000,
+    bloom_expected_items: u32 = DEFAULT_BLOOM_EXPECTED_ITEMS,
     compression: CompressionType = .zlib,
     compression_level: i32 = 6,
 
