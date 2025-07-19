@@ -429,32 +429,46 @@ pub const ErrorMetrics = struct {
         switch (ErrorType) {
             DBError => {
                 const current = self.db_errors.get(error_value) orelse 0;
-                self.db_errors.put(error_value, current + 1) catch {};
+                self.db_errors.put(error_value, current + 1) catch |err| {
+                    std.log.warn("Failed to record DB error metric: {}", .{err});
+                };
             },
             VLogError => {
                 const current = self.vlog_errors.get(error_value) orelse 0;
-                self.vlog_errors.put(error_value, current + 1) catch {};
+                self.vlog_errors.put(error_value, current + 1) catch |err| {
+                    std.log.warn("Failed to record VLog error metric: {}", .{err});
+                };
             },
             ManifestError => {
                 const current = self.manifest_errors.get(error_value) orelse 0;
-                self.manifest_errors.put(error_value, current + 1) catch {};
+                self.manifest_errors.put(error_value, current + 1) catch |err| {
+                    std.log.warn("Failed to record Manifest error metric: {}", .{err});
+                };
             },
             TxnError => {
                 const current = self.transaction_errors.get(error_value) orelse 0;
-                self.transaction_errors.put(error_value, current + 1) catch {};
+                self.transaction_errors.put(error_value, current + 1) catch |err| {
+                    std.log.warn("Failed to record Transaction error metric: {}", .{err});
+                };
             },
             TableError => {
                 const current = self.table_errors.get(error_value) orelse 0;
-                self.table_errors.put(error_value, current + 1) catch {};
+                self.table_errors.put(error_value, current + 1) catch |err| {
+                    std.log.warn("Failed to record Table error metric: {}", .{err});
+                };
             },
             CompactionError => {
                 const current = self.compaction_errors.get(error_value) orelse 0;
-                self.compaction_errors.put(error_value, current + 1) catch {};
+                self.compaction_errors.put(error_value, current + 1) catch |err| {
+                    std.log.warn("Failed to record Compaction error metric: {}", .{err});
+                };
             },
             else => {},
         }
 
-        self.error_timestamps.append(timestamp) catch {};
+        self.error_timestamps.append(timestamp) catch |err| {
+            std.log.warn("Failed to record error timestamp: {}", .{err});
+        };
         _ = self.total_errors.fetchAdd(1, .acq_rel);
     }
 
