@@ -83,7 +83,7 @@ test "wombat basic test" {
     defer arena_allocator.deinit();
 
     const test_data = try arena_allocator.alloc(u8, 100);
-    std.testing.expect(test_data.len == 100) catch unreachable;
+    try std.testing.expect(test_data.len == 100);
 }
 
 test "skiplist basic operations" {
@@ -104,8 +104,8 @@ test "skiplist basic operations" {
     try skiplist_impl.put(key, value);
 
     const retrieved = skiplist_impl.get(key);
-    std.testing.expect(retrieved != null) catch unreachable;
-    std.testing.expect(std.mem.eql(u8, retrieved.?.value, "test_value")) catch unreachable;
+    try std.testing.expect(retrieved != null);
+    try std.testing.expect(std.mem.eql(u8, retrieved.?.value, "test_value"));
 }
 
 test "ValueLog basic operations" {
@@ -130,7 +130,7 @@ test "ValueLog basic operations" {
     const read_value = try value_log.read(pointers[0], allocator);
     defer allocator.free(read_value);
 
-    std.testing.expect(std.mem.eql(u8, read_value, entries[0].value)) catch unreachable;
+    try std.testing.expect(std.mem.eql(u8, read_value, entries[0].value));
 }
 
 test "WaterMark transaction ordering" {
@@ -148,19 +148,19 @@ test "WaterMark transaction ordering" {
     try read_mark.begin(100);
     try txn_mark.begin(100);
 
-    std.testing.expect(read_mark.getWaterMark() == 100) catch unreachable;
-    std.testing.expect(txn_mark.getWaterMark() == 100) catch unreachable;
+    try std.testing.expect(read_mark.getWaterMark() == 100);
+    try std.testing.expect(txn_mark.getWaterMark() == 100);
 
     // Complete read transaction
     read_mark.done(100);
-    std.testing.expect(read_mark.getWaterMark() == std.math.maxInt(u64) - 1) catch unreachable;
+    try std.testing.expect(read_mark.getWaterMark() == std.math.maxInt(u64) - 1);
 
     // Commit transaction still pending
-    std.testing.expect(txn_mark.getWaterMark() == 100) catch unreachable;
+    try std.testing.expect(txn_mark.getWaterMark() == 100);
 
     // Complete commit transaction
     txn_mark.done(100);
-    std.testing.expect(txn_mark.getWaterMark() == std.math.maxInt(u64) - 1) catch unreachable;
+    try std.testing.expect(txn_mark.getWaterMark() == std.math.maxInt(u64) - 1);
 }
 
 test "Transaction API MVCC operations" {
@@ -189,37 +189,37 @@ test "Transaction API MVCC operations" {
     defer transaction.deinit();
 
     // Test transaction state
-    std.testing.expect(transaction.isActive()) catch unreachable;
-    std.testing.expect(!transaction.isCommitted()) catch unreachable;
-    std.testing.expect(!transaction.isAborted()) catch unreachable;
-    std.testing.expect(transaction.getReadTs() == read_ts) catch unreachable;
+    try std.testing.expect(transaction.isActive());
+    try std.testing.expect(!transaction.isCommitted());
+    try std.testing.expect(!transaction.isAborted());
+    try std.testing.expect(transaction.getReadTs() == read_ts);
 
     // Test set operation
     try transaction.set("key1", "value1");
-    std.testing.expect(transaction.getWriteCount() == 1) catch unreachable;
-    std.testing.expect(transaction.hasWrites()) catch unreachable;
+    try std.testing.expect(transaction.getWriteCount() == 1);
+    try std.testing.expect(transaction.hasWrites());
 
     // Test read-your-writes consistency
     const read_value = try transaction.get("key1");
-    std.testing.expect(read_value != null) catch unreachable;
-    std.testing.expect(std.mem.eql(u8, read_value.?, "value1")) catch unreachable;
+    try std.testing.expect(read_value != null);
+    try std.testing.expect(std.mem.eql(u8, read_value.?, "value1"));
 
     // Test delete operation
     try transaction.delete("key2");
-    std.testing.expect(transaction.getWriteCount() == 2) catch unreachable;
+    try std.testing.expect(transaction.getWriteCount() == 2);
 
     // Test delete read-your-writes
     const deleted_value = try transaction.get("key2");
-    std.testing.expect(deleted_value == null) catch unreachable;
+    try std.testing.expect(deleted_value == null);
 
     // Test size estimate
     const size = transaction.getSizeEstimate();
-    std.testing.expect(size > 0) catch unreachable;
+    try std.testing.expect(size > 0);
 
     // Test discard
     transaction.discard();
-    std.testing.expect(transaction.isAborted()) catch unreachable;
-    std.testing.expect(!transaction.isActive()) catch unreachable;
+    try std.testing.expect(transaction.isAborted());
+    try std.testing.expect(!transaction.isActive());
 }
 
 test "TxnManager lifecycle" {
@@ -241,18 +241,18 @@ test "TxnManager lifecycle" {
     // Test creating transactions
     const txn_opts = TxnOptions{ .read_only = false };
     const txn1 = try txn_manager.newTransaction(&mock_db, txn_opts);
-    std.testing.expect(txn_manager.getActiveCount() == 1) catch unreachable;
+    try std.testing.expect(txn_manager.getActiveCount() == 1);
 
     const txn2 = try txn_manager.newTransaction(&mock_db, txn_opts);
-    std.testing.expect(txn_manager.getActiveCount() == 2) catch unreachable;
+    try std.testing.expect(txn_manager.getActiveCount() == 2);
 
     // Test committing transaction
     try txn_manager.commitTransaction(txn1);
-    std.testing.expect(txn_manager.getActiveCount() == 1) catch unreachable;
+    try std.testing.expect(txn_manager.getActiveCount() == 1);
 
     // Test discarding transaction
     txn_manager.discardTransaction(txn2);
-    std.testing.expect(txn_manager.getActiveCount() == 0) catch unreachable;
+    try std.testing.expect(txn_manager.getActiveCount() == 0);
 }
 
 test "Channel integration with database operations" {
@@ -285,18 +285,18 @@ test "Channel integration with database operations" {
     };
 
     try write_channel.send(req1);
-    std.testing.expect(write_channel.size() == 1) catch unreachable;
+    try std.testing.expect(write_channel.size() == 1);
 
     // Test receiving write request
     const received_req = try write_channel.receive();
-    std.testing.expect(std.mem.eql(u8, received_req.key, "key1")) catch unreachable;
-    std.testing.expect(std.mem.eql(u8, received_req.value, "value1")) catch unreachable;
-    std.testing.expect(write_channel.isEmpty()) catch unreachable;
+    try std.testing.expect(std.mem.eql(u8, received_req.key, "key1"));
+    try std.testing.expect(std.mem.eql(u8, received_req.value, "value1"));
+    try std.testing.expect(write_channel.isEmpty());
 
     // Test channel statistics
     const stats = write_channel.getStats();
-    std.testing.expect(stats.sends_total == 1) catch unreachable;
-    std.testing.expect(stats.receives_total == 1) catch unreachable;
+    try std.testing.expect(stats.sends_total == 1);
+    try std.testing.expect(stats.receives_total == 1);
 }
 
 /// Generate a temporary test file path with unique suffix
@@ -350,38 +350,38 @@ test "TableBuilder integration with SSTable format" {
     defer sstable.close();
 
     // Test basic properties
-    std.testing.expect(sstable.getFileId() == 123) catch unreachable;
-    std.testing.expect(sstable.getLevel() == 1) catch unreachable;
+    try std.testing.expect(sstable.getFileId() == 123);
+    try std.testing.expect(sstable.getLevel() == 1);
 
-    std.testing.expect(std.mem.eql(u8, sstable.getSmallestKey(), "apple")) catch unreachable;
-    std.testing.expect(std.mem.eql(u8, sstable.getBiggestKey(), "cherry")) catch unreachable;
+    try std.testing.expect(std.mem.eql(u8, sstable.getSmallestKey(), "apple"));
+    try std.testing.expect(std.mem.eql(u8, sstable.getBiggestKey(), "cherry"));
 
     // Test key lookups
     const apple_result = try sstable.get("apple");
-    std.testing.expect(apple_result != null) catch unreachable;
-    std.testing.expect(std.mem.eql(u8, apple_result.?.value, "fruit")) catch unreachable;
-    std.testing.expect(apple_result.?.timestamp == 10) catch unreachable;
+    try std.testing.expect(apple_result != null);
+    try std.testing.expect(std.mem.eql(u8, apple_result.?.value, "fruit"));
+    try std.testing.expect(apple_result.?.timestamp == 10);
     // Free the allocated value memory
     allocator.free(apple_result.?.value);
 
     const banana_result = try sstable.get("banana");
-    std.testing.expect(banana_result != null) catch unreachable;
-    std.testing.expect(std.mem.eql(u8, banana_result.?.value, "yellow")) catch unreachable;
+    try std.testing.expect(banana_result != null);
+    try std.testing.expect(std.mem.eql(u8, banana_result.?.value, "yellow"));
     // Free the allocated value memory
     allocator.free(banana_result.?.value);
 
     // Test non-existent key
     const grape_result = try sstable.get("grape");
-    std.testing.expect(grape_result == null) catch unreachable;
+    try std.testing.expect(grape_result == null);
 
     // Test key range overlaps
-    std.testing.expect(sstable.overlapsWithKeyRange("a", "b")) catch unreachable; // Should overlap with apple
-    std.testing.expect(!sstable.overlapsWithKeyRange("d", "z")) catch unreachable; // Should not overlap
+    try std.testing.expect(sstable.overlapsWithKeyRange("a", "b")); // Should overlap with apple
+    try std.testing.expect(!sstable.overlapsWithKeyRange("d", "z")); // Should not overlap
 
     // Test statistics
     const stats = sstable.getStats();
-    std.testing.expect(stats.file_size > 0) catch unreachable;
-    std.testing.expect(stats.key_count > 0) catch unreachable;
+    try std.testing.expect(stats.file_size > 0);
+    try std.testing.expect(stats.key_count > 0);
 }
 
 fn cleanupVLogTestDir(dir_path: []const u8) void {
