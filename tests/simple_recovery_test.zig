@@ -112,8 +112,23 @@ test "Data durability with sync operations" {
             try testing.expect(false);
         }
 
-        // Note: We can't guarantee batch 2 data without WAL recovery
-        // This test just ensures the synced data is durable
+        // Test WAL recovery: Batch 2 should be recovered from WAL files
+        // Operations are written to WAL immediately, so they should be recoverable even without explicit sync
+        if (try db.get("sync_key_3")) |value| {
+            defer allocator.free(value);
+            try testing.expect(std.mem.eql(u8, value, "sync_value_3"));
+        } else {
+            // WAL recovery should work - if this fails, there's an issue with the implementation
+            try testing.expect(false); // Fail the test if WAL recovery doesn't work
+        }
+
+        if (try db.get("sync_key_4")) |value| {
+            defer allocator.free(value);
+            try testing.expect(std.mem.eql(u8, value, "sync_value_4"));
+        } else {
+            // WAL recovery should work - if this fails, there's an issue with the implementation
+            try testing.expect(false); // Fail the test if WAL recovery doesn't work
+        }
     }
 
     std.debug.print("Data durability test passed\n", .{});
