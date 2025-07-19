@@ -457,7 +457,9 @@ pub const DB = struct {
             std.log.info("Successfully replayed WAL file: {s}", .{entry.name});
 
             // After successful replay, delete the WAL file
-            fs.cwd().deleteFile(wal_path) catch {};
+            fs.cwd().deleteFile(wal_path) catch |err| {
+                std.log.warn("Failed to delete WAL file {s} after replay: {}", .{ wal_path, err });
+            };
         }
     }
 
@@ -549,7 +551,9 @@ pub const DB = struct {
                 if (is_orphaned) {
                     const file_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
                     defer self.allocator.free(file_path);
-                    fs.cwd().deleteFile(file_path) catch {};
+                    fs.cwd().deleteFile(file_path) catch |err| {
+                        std.log.warn("Failed to delete orphaned SST file {s}: {}", .{ file_path, err });
+                    };
                 }
             }
 
@@ -557,7 +561,9 @@ pub const DB = struct {
             if (std.mem.startsWith(u8, entry.name, "tmp_") or std.mem.endsWith(u8, entry.name, ".tmp")) {
                 const file_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.options.dir, entry.name }) catch continue;
                 defer self.allocator.free(file_path);
-                fs.cwd().deleteFile(file_path) catch {};
+                fs.cwd().deleteFile(file_path) catch |err| {
+                    std.log.warn("Failed to delete temporary file {s}: {}", .{ file_path, err });
+                };
             }
         }
 
@@ -589,7 +595,9 @@ pub const DB = struct {
                     if (!is_referenced) {
                         const file_path = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.options.value_dir, entry.name }) catch continue;
                         defer self.allocator.free(file_path);
-                        fs.cwd().deleteFile(file_path) catch {};
+                        fs.cwd().deleteFile(file_path) catch |err| {
+                            std.log.warn("Failed to delete unreferenced value log file {s}: {}", .{ file_path, err });
+                        };
                     }
                 }
             }
